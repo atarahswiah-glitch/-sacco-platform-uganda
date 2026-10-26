@@ -24,6 +24,7 @@ public class MainActivity extends Activity {
     private TextView status;
     private Button loginButton;
     private String currentScreen = "login";
+    private volatile String sessionAccessToken = null;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -121,7 +122,8 @@ public class MainActivity extends Activity {
                         "/auth/v1/token?grant_type=password",
                         "POST", body.toString(), null));
 
-                String token = auth.getString("access_token");
+                sessionAccessToken = auth.getString("access_token");
+                    String token = sessionAccessToken;
 
                 JSONObject bootstrap = new JSONObject(request(
                         "/functions/v1/sacco-dashboard-bootstrap",
@@ -262,7 +264,149 @@ public class MainActivity extends Activity {
         return tile;
     }
 
+
+    private EditText saccoField(LinearLayout page, String hint) {
+        EditText e = new EditText(this);
+        e.setSingleLine(true);
+        e.setHint(hint);
+        page.addView(e, params());
+        return e;
+    }
+
+    private void showSaccoRegistration() {
+        currentScreen = "create_sacco";
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setPadding(dp(22), dp(20), dp(22), dp(28));
+        page.setBackgroundColor(Color.WHITE);
+        scroll.addView(page);
+
+        Button back = new Button(this);
+        back.setText("BACK TO DASHBOARD");
+        back.setOnClickListener(v -> showDashboard());
+        page.addView(back, params());
+
+        TextView heading = new TextView(this);
+        heading.setText("Register a SACCO");
+        heading.setTextColor(blue);
+        heading.setTextSize(25);
+        heading.setTypeface(null, Typeface.BOLD);
+        heading.setPadding(0, dp(18), 0, dp(10));
+        page.addView(heading, params());
+
+        EditText name = saccoField(page, "SACCO name (required)");
+        EditText location = saccoField(page, "General location");
+        EditText district = saccoField(page, "District");
+        EditText town = saccoField(page, "Town or village");
+        EditText address = saccoField(page, "Physical address");
+        EditText phone = saccoField(page, "Contact phone");
+        phone.setInputType(InputType.TYPE_CLASS_PHONE);
+        EditText email = saccoField(page, "Contact email (optional)");
+        email.setInputType(InputType.TYPE_CLASS_TEXT |
+                InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        EditText limit = saccoField(page, "Member limit (optional)");
+        limit.setInputType(InputType.TYPE_CLASS_NUMBER);
+
+        Button create = new Button(this);
+        create.setText("CREATE SACCO");
+        create.setTextColor(Color.WHITE);
+        create.setBackgroundTintList(
+                android.content.res.ColorStateList.valueOf(blue));
+        LinearLayout.LayoutParams cp = params();
+        cp.topMargin = dp(16);
+        page.addView(create, cp);
+
+        TextView result = new TextView(this);
+        result.setTextColor(Color.DKGRAY);
+        result.setTextSize(15);
+        result.setPadding(0, dp(14), 0, 0);
+        page.addView(result, params());
+
+        create.setOnClickListener(v -> {
+            String n = name.getText().toString().trim();
+            String tok = sessionAccessToken;
+            String loc = location.getText().toString().trim();
+            String dist = district.getText().toString().trim();
+            String tw = town.getText().toString().trim();
+            String addr = address.getText().toString().trim();
+            String ph = phone.getText().toString().trim();
+            String em = email.getText().toString().trim();
+            String lim = limit.getText().toString().trim();
+
+            if (n.isEmpty()) {
+                name.setError("Enter the SACCO name");
+                return;
+            }
+            if (tok == null || tok.isEmpty()) {
+                result.setText("Session missing. Sign in again.");
+                return;
+            }
+
+            final int memberLimit;
+            try {
+                memberLimit = lim.isEmpty() ? 0 : Integer.parseInt(lim);
+            } catch (NumberFormatException ex) {
+                limit.setError("Enter a whole number");
+                return;
+            }
+            if (memberLimit < 0 || memberLimit > 1000000 ||
+                    (!lim.isEmpty() && memberLimit == 0)) {
+                limit.setError("Enter 1 to 1000000, or leave blank");
+                return;
+            }
+
+            create.setEnabled(false);
+            result.setText("Creating SACCO securely...");
+
+            new Thread(() -> {
+                String message;
+                try {
+                    JSONObject body = new JSONObject();
+                    body.put("name", n);
+                    body.put("location", loc);
+                    body.put("district", dist);
+                    body.put("town_village", tw);
+                    body.put("physical_address", addr);
+                    body.put("contact_phone", ph);
+                    body.put("contact_email", em);
+                    if (memberLimit > 0) body.put("member_limit", memberLimit);
+
+                    JSONObject response = new JSONObject(request(
+                            "/functions/v1/sacco-create",
+                            "POST", body.toString(), tok));
+                    JSONObject sacco = response.optJSONObject("sacco");
+
+                    if (response.optBoolean("ok") && sacco != null) {
+                        message = "SACCO created successfully.\n\n"
+                                + "Name: " + sacco.optString("name", n) + "\n"
+                                + "SACCO ID: " + sacco.optString("sacco_code", "Not returned")
+                                + "\nStatus: " + sacco.optString("status", "trial");
+                    } else {
+                        message = "The server did not confirm creation. Please check and retry.";
+                    }
+                } catch (Exception ex) {
+                    String detail = ex.getMessage();
+                    message = "Creation failed; success was not confirmed.\n"
+                            + (detail == null ? ex.getClass().getSimpleName() : detail);
+                }
+
+                final String msg = message;
+                runOnUiThread(() -> {
+                    create.setEnabled(true);
+                    result.setText(msg);
+                });
+            }).start();
+        });
+
+        setContentView(scroll);
+    }
+
     private void openModule(String name) {
+        if ("SACCOs".equals(name)) {
+            showSaccoRegistration();
+            return;
+        }
         currentScreen = "module";
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
