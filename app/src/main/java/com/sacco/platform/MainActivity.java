@@ -121,17 +121,13 @@ public class MainActivity extends Activity {
                         "/auth/v1/token?grant_type=password",
                         "POST", body.toString(), null));
 
-                String userId = auth.getJSONObject("user").getString("id");
                 String token = auth.getString("access_token");
 
-                String ownerJson = request(
-                        "/rest/v1/platform_owners?user_id=eq."
-                                + userId + "&select=active",
-                        "GET", null, token);
-
-                JSONArray owners = new JSONArray(ownerJson);
-                authorized = owners.length() > 0
-                        && owners.getJSONObject(0).optBoolean("active", false);
+                JSONObject bootstrap = new JSONObject(request(
+                        "/functions/v1/sacco-dashboard-bootstrap",
+                        "POST", "{}", token));
+                String role = bootstrap.optString("dashboard_role", "");
+                authorized = "platform_owner".equals(role);
 
                 if (!authorized) {
                     message = "Login succeeded, but this account is not yet authorized as a Platform Owner.";
