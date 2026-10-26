@@ -26,7 +26,7 @@ public class MainActivity extends Activity {
         page.setBackgroundColor(Color.WHITE);
         scroll.addView(page);
 
-        TextView brand = text("CIRCLE PLATFORM UGANDA", 13, Color.WHITE, true);
+        TextView brand = text("SACCO PLATFORM UGANDA", 13, Color.WHITE, true);
         brand.setLetterSpacing(0.06f);
         brand.setPadding(dp(16), dp(16), dp(16), dp(16));
         brand.setBackgroundColor(blue);

@@ -1,6 +1,6 @@
-# Circle Platform Uganda Android
+# SACCO Platform Uganda Android
 
-A clean, native Android starter for the Circle Platform Uganda / SACCO Platform Uganda project.
+A clean, native Android starter for the SACCO Platform Uganda / SACCO Platform Uganda project.
 
 ## Current status
 This is a starter build, not a complete SACCO system. It contains a native Android screen and a GitHub Actions workflow that builds a debug APK. Authentication, tenant isolation, Supabase integration, financial workflows, offline sync, and production security still need to be implemented and tested.
