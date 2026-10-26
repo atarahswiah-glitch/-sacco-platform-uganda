@@ -125,7 +125,7 @@ public class MainActivity extends Activity {
 
                 JSONObject bootstrap = new JSONObject(request(
                         "/functions/v1/sacco-dashboard-bootstrap",
-                        "POST", "{}", token));
+                        "GET", null, token));
                 String role = bootstrap.optString("dashboard_role", "");
                 authorized = "platform_owner".equals(role);
 
