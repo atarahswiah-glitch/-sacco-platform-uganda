@@ -135,7 +135,8 @@ public class MainActivity extends Activity {
                     message = "Authorized.";
                 }
             } catch (Exception e) {
-                message = "Sign-in failed. Check your internet connection and account details.";
+                message = "Sign-in request failed: " +
+    (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
             }
 
             final boolean canEnter = authorized;
@@ -343,7 +344,7 @@ public class MainActivity extends Activity {
                 }
             }
             if (code < 200 || code >= 300) {
-                throw new Exception("HTTP " + code);
+                throw new Exception("HTTP " + code + ": " + result.toString());
             }
             return result.toString();
         } finally {
