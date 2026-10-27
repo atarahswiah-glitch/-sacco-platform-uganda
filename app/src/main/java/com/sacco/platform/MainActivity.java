@@ -25,6 +25,8 @@ public class MainActivity extends Activity {
     private Button loginButton;
     private String currentScreen = "login";
     private volatile String sessionAccessToken = null;
+    private volatile String currentRole = null;
+    private volatile String currentSaccoId = null;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -129,16 +131,24 @@ public class MainActivity extends Activity {
                         "/functions/v1/sacco-dashboard-bootstrap",
                         "GET", null, token));
                 String role = bootstrap.optString("dashboard_role", "");
-                authorized = "platform_owner".equals(role);
+                String saccoId = bootstrap.optString("sacco_id", "");
+                currentRole = role;
+                currentSaccoId = saccoId;
+                authorized = "platform_owner".equals(role) || (isSupportedSaccoRole(role) && !saccoId.isEmpty());
 
                 if (!authorized) {
-                    message = "Login succeeded, but this account is not yet authorized as a Platform Owner.";
+                    sessionAccessToken = null;
+                    currentRole = null;
+                    currentSaccoId = null;
+                    message = "This account has no active Platform Owner or SACCO authorization.";
                 } else {
                     message = "Authorized.";
                 }
             } catch (Exception e) {
-                message = "Sign-in request failed: " +
-    (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+                sessionAccessToken = null;
+                currentRole = null;
+                currentSaccoId = null;
+                message = explainSignInError(e);
             }
 
             final boolean canEnter = authorized;
@@ -146,7 +156,11 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 loginButton.setEnabled(true);
                 if (canEnter) {
-                    showDashboard();
+                    if ("platform_owner".equals(currentRole)) {
+                        showDashboard();
+                    } else {
+                        showSaccoDashboard();
+                    }
                 } else {
                     status.setText(result);
                 }
@@ -154,7 +168,54 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    private boolean isSupportedSaccoRole(String role) {
+        return "chairperson".equals(role) || "treasurer".equals(role)
+                || "secretary".equals(role) || "sacco_admin".equals(role)
+                || "credit_officer".equals(role) || "assistant".equals(role)
+                || "member".equals(role);
+    }
+
+    private String explainSignInError(Exception e) {
+        if (e instanceof java.net.UnknownHostException) {
+            return "Cannot find the Supabase server. Check your internet connection or DNS.";
+        }
+        if (e instanceof java.net.SocketTimeoutException) {
+            return "The Supabase request timed out. Check your connection and try again.";
+        }
+        if (e instanceof java.net.ConnectException) {
+            return "Could not connect to Supabase. Check your internet connection and try again.";
+        }
+
+        String detail = e.getMessage() == null
+                ? e.getClass().getSimpleName() : e.getMessage();
+
+        if (detail.startsWith("HTTP 400") || detail.startsWith("HTTP 401")) {
+            return "Sign-in or session authorization was rejected (" + detail
+                    + "). Check your credentials and account authorization.";
+        }
+        if (detail.startsWith("HTTP 403")) {
+            return "Your account does not currently have permission to access this workspace. Contact your SACCO administrator if you believe this is an error.";
+        }
+        if (detail.startsWith("HTTP 404")) {
+            return "A required Supabase endpoint was not found. Verify that the "
+                    + "Edge Function is deployed with the expected name. (" + detail + ")";
+        }
+        if (detail.startsWith("HTTP 429")) {
+            return "Supabase is temporarily rate-limiting requests. Wait and try again. ("
+                    + detail + ")";
+        }
+        if (detail.startsWith("HTTP 5")) {
+            return "Supabase reported a server error. Try again later. (" + detail + ")";
+        }
+        return "Sign-in failed: " + detail;
+    }
+
     private void showDashboard() {
+        if (!"platform_owner".equals(currentRole)) {
+            if (currentRole != null && !currentRole.isEmpty() && currentSaccoId != null && !currentSaccoId.isEmpty()) showSaccoDashboard();
+            else showLogin();
+            return;
+        }
         currentScreen = "dashboard";
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -210,12 +271,74 @@ public class MainActivity extends Activity {
 
         Button logout = new Button(this);
         logout.setText("LOG OUT");
-        logout.setOnClickListener(v -> showLogin());
+        logout.setOnClickListener(v -> logout());
         LinearLayout.LayoutParams lp = params();
         lp.topMargin = dp(16);
         page.addView(logout, lp);
 
         setContentView(scroll);
+    }
+
+    private void showSaccoDashboard() {
+        currentScreen = "sacco_dashboard";
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setPadding(dp(22), dp(24), dp(22), dp(28));
+        page.setBackgroundColor(Color.WHITE);
+        scroll.addView(page);
+
+        TextView heading = new TextView(this);
+        heading.setText("SACCO PLATFORM");
+        heading.setTextSize(24);
+        heading.setTextColor(blue);
+        heading.setTypeface(null, Typeface.BOLD);
+        page.addView(heading, params());
+
+        TextView subtitle = new TextView(this);
+        subtitle.setText("YOUR SACCO WORKSPACE");
+        subtitle.setTextSize(13);
+        subtitle.setTextColor(Color.DKGRAY);
+        subtitle.setPadding(0, dp(6), 0, dp(22));
+        page.addView(subtitle, params());
+
+        TextView role = new TextView(this);
+        role.setText("Your role: " + currentRole);
+        role.setTextSize(17);
+        role.setTextColor(Color.BLACK);
+        page.addView(role, params());
+
+        TextView sacco = new TextView(this);
+        sacco.setText("SACCO ID: " + currentSaccoId);
+        sacco.setTextSize(16);
+        sacco.setTextColor(Color.BLACK);
+        sacco.setPadding(0, dp(10), 0, dp(18));
+        page.addView(sacco, params());
+
+        TextView info = new TextView(this);
+        info.setText("Your account has been authorized for this SACCO workspace. Savings, member management, loans, meetings and other workflows are not connected to this dashboard yet.");
+        info.setTextSize(15);
+        info.setTextColor(Color.DKGRAY);
+        info.setPadding(dp(14), dp(16), dp(14), dp(16));
+        info.setBackground(roundRect(pale, 12));
+        page.addView(info, params());
+
+        Button logout = new Button(this);
+        logout.setText("LOG OUT");
+        logout.setOnClickListener(v -> logout());
+        LinearLayout.LayoutParams lp = params();
+        lp.topMargin = dp(18);
+        page.addView(logout, lp);
+
+        setContentView(scroll);
+    }
+
+    private void logout() {
+        sessionAccessToken = null;
+        currentRole = null;
+        currentSaccoId = null;
+        showLogin();
     }
 
     private void addTileRow(LinearLayout parent,
@@ -403,6 +526,10 @@ public class MainActivity extends Activity {
     }
 
     private void openModule(String name) {
+        if (!"platform_owner".equals(currentRole)) {
+            showSaccoDashboard();
+            return;
+        }
         if ("SACCOs".equals(name)) {
             showSaccoRegistration();
             return;
@@ -480,11 +607,13 @@ public class MainActivity extends Activity {
             InputStream stream = code >= 200 && code < 300
                     ? c.getInputStream() : c.getErrorStream();
             StringBuilder result = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(stream, StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    result.append(line);
+            if (stream != null) {
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        result.append(line);
+                    }
                 }
             }
             if (code < 200 || code >= 300) {
