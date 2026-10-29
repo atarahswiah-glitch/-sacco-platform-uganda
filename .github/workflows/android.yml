@@ -2,7 +2,7 @@ name: Build SACCO Android APK
 
 on:
   push:
-    branches: ["main", "master"]
+    branches: ["main", "master", "android-build"]
   workflow_dispatch:
 
 permissions:
