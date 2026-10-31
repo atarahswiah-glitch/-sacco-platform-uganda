@@ -321,6 +321,15 @@ private suspend fun provisionMemberAccount(session:SaccoSession,m:SaccoMemberRow
  result
 }
 
+
+private suspend fun registerSaccoMember(session:SaccoSession,fullName:String,phone:String,email:String,address:String):SaccoMemberRow = withContext(Dispatchers.IO) {
+ val sid=session.saccoId ?: throw IOException("No SACCO context.")
+ val body=JSONObject().put("sacco_id",sid).put("full_name",fullName.trim()).put("phone",phone.trim()).put("email",email.trim()).put("address",address.trim()).put("custom_fields",JSONObject())
+ val req=Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-register-member").header("apikey",SUPABASE_PUBLISHABLE_KEY).header("Authorization","Bearer "+session.accessToken).header("Content-Type","application/json").post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+ val member=requestJson(req).optJSONObject("member") ?: throw IOException("Member registration returned an incomplete response.")
+ SaccoMemberRow(member.optString("id"),member.optString("member_id"),member.optString("member_number"),member.optString("full_name",fullName),phone,false)
+}
+
 private suspend fun fetchNotifications(session: SaccoSession): List<Notice> = withContext(Dispatchers.IO) {
     val text = apiRequest(session, "/rest/v1/sacco_notifications?select=id,title,body,category,created_at,read_at&order=created_at.desc&limit=50")
     val array = JSONArray(text)
@@ -709,6 +718,12 @@ private fun MemberManagementScreen(session:SaccoSession,onBack:()->Unit) {
  var role by remember { mutableStateOf("member") }
  var menu by remember { mutableStateOf(false) }
  var account by remember { mutableStateOf<OneTimeAccount?>(null) }
+ var adding by remember { mutableStateOf(false) }
+ var registering by remember { mutableStateOf(false) }
+ var newName by remember { mutableStateOf("") }
+ var newPhone by remember { mutableStateOf("") }
+ var newEmail by remember { mutableStateOf("") }
+ var newAddress by remember { mutableStateOf("") }
  var reload by remember { mutableIntStateOf(0) }
  val scope=rememberCoroutineScope()
  val canManage=session.role=="chairperson"||session.role=="sacco_admin"
@@ -726,6 +741,23 @@ private fun MemberManagementScreen(session:SaccoSession,onBack:()->Unit) {
      DropdownMenu(expanded=menu,onDismissRequest={menu=false}){roles.forEach{r->DropdownMenuItem(text={Text(r.second)},onClick={role=r.first;menu=false})}}
     }
     Text("The platform generates the Account ID and one-time temporary PIN.",color=Muted,fontSize=12.sp)
+   }
+  }
+  if(canManage) {
+   OutlinedButton(onClick={adding=!adding},modifier=Modifier.fillMaxWidth()) { Icon(Icons.Filled.PersonAdd,null); Spacer(Modifier.width(8.dp)); Text(if(adding) "Close registration form" else "Register a new member") }
+   if(adding) Surface(color=Color.White,shape=RoundedCornerShape(15.dp),modifier=Modifier.fillMaxWidth()) {
+    Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+     Text("New member details",color=Navy,fontWeight=FontWeight.Bold)
+     OutlinedTextField(value=newName,onValueChange={newName=it},label={Text("Full name *")},singleLine=true,modifier=Modifier.fillMaxWidth())
+     OutlinedTextField(value=newPhone,onValueChange={newPhone=it},label={Text("Phone number")},singleLine=true,modifier=Modifier.fillMaxWidth())
+     OutlinedTextField(value=newEmail,onValueChange={newEmail=it},label={Text("Email (optional)")},singleLine=true,modifier=Modifier.fillMaxWidth())
+     OutlinedTextField(value=newAddress,onValueChange={newAddress=it},label={Text("Address (optional)")},singleLine=true,modifier=Modifier.fillMaxWidth())
+     Text("Member ID is generated automatically by the SACCO platform.",color=Muted,fontSize=11.sp)
+     Button(onClick={
+      if(newName.trim().length<2) error="Enter the member's full name."
+      else { registering=true;error="";scope.launch { try { val created=registerSaccoMember(session,newName,newPhone,newEmail,newAddress);members=listOf(created)+members;adding=false;newName="";newPhone="";newEmail="";newAddress="" } catch(e:Exception){error=e.message ?: "Member registration failed."} finally{registering=false} } }
+     },enabled=!registering,modifier=Modifier.fillMaxWidth()) { if(registering) CircularProgressIndicator(Modifier.size(18.dp),color=Color.White,strokeWidth=2.dp) else Text("Save member") }
+    }
    }
   }
   if(error.isNotBlank()) Text(error,color=MaterialTheme.colorScheme.error,fontSize=12.sp,modifier=Modifier.padding(vertical=8.dp))
