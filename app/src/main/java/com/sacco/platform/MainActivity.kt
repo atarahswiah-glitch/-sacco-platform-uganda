@@ -94,6 +94,8 @@ private fun SaccoApp() {
     var welcomeStep by remember { mutableStateOf(false) }
     var loginStep by remember { mutableStateOf(false) }
     var pendingAccountId by remember { mutableStateOf("") }
+    var ownerBootstrap by remember { mutableStateOf(false) }
+    var activationRequired by remember { mutableStateOf(false) }
     var destination by remember { mutableStateOf(Destination.HOME) }
     var feature by remember { mutableStateOf<String?>(null) }
     var notices by remember { mutableStateOf<List<Notice>>(emptyList()) }
@@ -109,10 +111,26 @@ private fun SaccoApp() {
                 if (!welcomeStep) {
                     WelcomeScreen(onGetStarted = { welcomeStep = true })
                 } else if (!loginStep) {
-                    PlatformOwnerIdScreen(busy, statusMessage, onBack = { welcomeStep = false; statusMessage = "" }, onContinue = { id -> pendingAccountId = id.trim().uppercase(); loginStep = true; statusMessage = "" })
+                    PlatformOwnerIdScreen(busy, statusMessage, onBack = { welcomeStep = false; statusMessage = "" }, onContinue = { id ->
+                        scope.launch {
+                            busy = true
+                            statusMessage = ""
+                            try {
+                                val check = withContext(Dispatchers.IO) { checkAccountId(id) }
+                                pendingAccountId = id.trim().uppercase()
+                                ownerBootstrap = check.isPlatformOwner
+                                activationRequired = check.requiresActivation
+                                loginStep = true
+                            } catch (e: Exception) {
+                                statusMessage = e.message ?: "Account verification failed. Please try again."
+                            } finally { busy = false }
+                        }
+                    })
                 } else {
                     LoginScreen(
                         initialAccountId = pendingAccountId,
+                        initialActivationMode = activationRequired,
+                        ownerBootstrap = ownerBootstrap,
                         onChangeAccountId = { loginStep = false; statusMessage = "" },
                         busy = busy,
                         message = statusMessage,
@@ -141,7 +159,10 @@ private fun SaccoApp() {
                                     withContext(Dispatchers.IO) {
                                         activateAccount(accountId, temporaryPin, newPin)
                                     }
-                                    statusMessage = "Account activated. Sign in with your new PIN."
+                                    session = withContext(Dispatchers.IO) { loginAndLoadContext(accountId, newPin) }
+                                    destination = Destination.HOME
+                                    feature = null
+                                    statusMessage = ""
                                 } catch (e: Exception) {
                                     statusMessage = e.message ?: "Account activation failed. Please try again."
                                 } finally {
@@ -171,7 +192,16 @@ private fun SaccoApp() {
                             title = feature ?: destination.label,
                             subtitle = if (active.role == "platform_owner") "SACCO Platform Uganda" else active.saccoName,
                             onBack = if (feature != null) ({ feature = null }) else null,
-                            onLogout = { session = null; feature = null; statusMessage = "" }
+                            onLogout = {
+                                session = null
+                                feature = null
+                                statusMessage = ""
+                                loginStep = false
+                                welcomeStep = false
+                                pendingAccountId = ""
+                                ownerBootstrap = false
+                                activationRequired = false
+                            }
                         )
                     },
                     bottomBar = {
@@ -286,19 +316,33 @@ private suspend fun loginAndLoadContext(accountId: String, pin: String): SaccoSe
 
 private fun activateAccount(accountId: String, temporaryPin: String, newPin: String) {
     if (accountId.isBlank()) throw IOException("Enter your account ID.")
-    if (!temporaryPin.matches(Regex("^[0-9]{8,12}$"))) throw IOException("Enter the temporary PIN issued to you.")
-    if (!newPin.matches(Regex("^[0-9]{8,12}$"))) throw IOException("Your new PIN must contain 8–12 digits.")
-    if (temporaryPin == newPin) throw IOException("Choose a new PIN different from the temporary PIN.")
-    val payload = JSONObject()
-        .put("account_id", accountId.trim())
-        .put("temporary_pin", temporaryPin)
-        .put("new_pin", newPin)
+    if (!newPin.matches(Regex("^[0-9]{8,12}$"))) throw IOException("Your PIN must contain 8–12 digits.")
+    if (temporaryPin.isNotBlank() && (!temporaryPin.matches(Regex("^[0-9]{8,12}$")) || temporaryPin == newPin)) {
+        throw IOException("Enter a valid temporary PIN and choose a different new PIN.")
+    }
+    val payload = JSONObject().put("account_id", accountId.trim()).put("new_pin", newPin)
+    if (temporaryPin.isNotBlank()) payload.put("temporary_pin", temporaryPin)
     val request = Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-activate-account")
         .header("apikey", SUPABASE_PUBLISHABLE_KEY)
         .header("Content-Type", "application/json")
         .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
         .build()
     requestJson(request)
+}
+
+private data class AccountIdCheck(val requiresActivation: Boolean, val isPlatformOwner: Boolean)
+
+private fun checkAccountId(accountId: String): AccountIdCheck {
+    val normalized = accountId.trim().uppercase()
+    if (!normalized.matches(Regex("^[A-Z0-9][A-Z0-9-]{5,23}$"))) throw IOException("Enter your valid system-issued Account ID.")
+    val payload = JSONObject().put("account_id", normalized)
+    val request = Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-check-account-id")
+        .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+        .header("Content-Type", "application/json")
+        .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+        .build()
+    val result = requestJson(request)
+    return AccountIdCheck(result.optBoolean("requires_activation"), result.optString("account_type") == "platform_owner")
 }
 
 private fun requestJsonArray(request: Request): String {
@@ -329,6 +373,15 @@ private fun requestJson(request: Request): JSONObject {
     }
 }
 private fun friendlyError(code: String, httpCode: Int): String = when (code) {
+    "account_not_found" -> "Account not found. Check the Account ID issued by the system."
+    "account_lookup_locked" -> "Too many account checks were attempted. Wait before trying again."
+    "account_lookup_unavailable" -> "Account verification is temporarily unavailable. Check your connection and try again."
+    "platform_owner_required" -> "Only the Platform Owner can activate a SACCO tenant."
+    "sacco_not_pending_owner_activation" -> "This SACCO is not awaiting first-time activation."
+    "chairperson_already_activated" -> "This SACCO already has its first chairperson account."
+    "chairperson_name_required" -> "Enter the first chairperson's full name."
+    "invalid_chairperson_email" -> "Enter a valid chairperson email address."
+    "tenant_activation_failed_retry" -> "The tenant activation could not be completed. The SACCO remains pending; retry once the connection is stable."
     "invalid_account_id_or_pin" -> "The account ID or PIN is incorrect, or sign-in is temporarily locked."
     "account_activation_required" -> "This is a new account. Select “I have a temporary PIN — activate account” and choose your private PIN."
     "invalid_activation_details" -> "The Account ID or temporary PIN is incorrect, or activation is temporarily locked."
@@ -480,6 +533,8 @@ private fun PlatformOwnerIdScreen(
 @Composable
 private fun LoginScreen(
     initialAccountId: String,
+    initialActivationMode: Boolean,
+    ownerBootstrap: Boolean,
     onChangeAccountId: () -> Unit,
     busy: Boolean,
     message: String,
@@ -491,7 +546,7 @@ private fun LoginScreen(
     var temporaryPin by remember { mutableStateOf("") }
     var newPin by remember { mutableStateOf("") }
     var confirmPin by remember { mutableStateOf("") }
-    var activationMode by remember { mutableStateOf(false) }
+    var activationMode by remember(initialActivationMode) { mutableStateOf(initialActivationMode) }
     var showPin by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().background(Canvas).padding(horizontal = 24.dp), verticalArrangement = Arrangement.Center) {
         Box(Modifier.size(68.dp).background(Blue, RoundedCornerShape(22.dp)), contentAlignment = Alignment.Center) {
@@ -501,21 +556,66 @@ private fun LoginScreen(
         Text("SACCO Platform", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Navy)
         Text("Uganda", fontSize = 17.sp, color = Blue, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(10.dp))
-        Text(if (activationMode) "Activate your new account" else "Secure access to your SACCO", color = Muted, fontSize = 15.sp)
-        Spacer(Modifier.height(30.dp))
-        OutlinedTextField(value = accountId, onValueChange = { accountId = it.uppercase().take(24) }, label = { Text("Account ID") }, leadingIcon = { Icon(Icons.Filled.Badge, null) }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
-        TextButton(onClick = onChangeAccountId, enabled = !busy, contentPadding = PaddingValues(0.dp)) { Text("Change Account ID") }
-        Spacer(Modifier.height(14.dp))
+        Text(
+            when {
+                activationMode && ownerBootstrap -> "First-time Platform Owner registration"
+                activationMode -> "Activate your new SACCO account"
+                else -> "Secure sign-in"
+            },
+            color = Muted, fontSize = 15.sp
+        )
+        Spacer(Modifier.height(24.dp))
+        OutlinedTextField(
+            value = accountId, onValueChange = { if (!activationMode) accountId = it.uppercase().take(24) },
+            readOnly = activationMode,
+            label = { Text("Verified Account ID") }, leadingIcon = { Icon(Icons.Filled.Badge, null) },
+            singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)
+        )
         if (!activationMode) {
-            OutlinedTextField(value = pin, onValueChange = { pin = it.filter(Char::isDigit).take(12) }, label = { Text("PIN (8–12 digits)") }, leadingIcon = { Icon(Icons.Filled.Lock, null) }, trailingIcon = { IconButton(onClick = { showPin = !showPin }) { Icon(if (showPin) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null) } }, visualTransformation = if (showPin) VisualTransformation.None else PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
+            TextButton(onClick = onChangeAccountId, enabled = !busy, contentPadding = PaddingValues(0.dp)) { Text("Change Account ID") }
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = pin, onValueChange = { pin = it.filter(Char::isDigit).take(12) },
+                label = { Text("PIN (8–12 digits)") }, leadingIcon = { Icon(Icons.Filled.Lock, null) },
+                trailingIcon = { IconButton(onClick = { showPin = !showPin }) { Icon(if (showPin) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null) } },
+                visualTransformation = if (showPin) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)
+            )
         } else {
-            OutlinedTextField(value = temporaryPin, onValueChange = { temporaryPin = it.filter(Char::isDigit).take(12) }, label = { Text("Temporary PIN issued to you") }, leadingIcon = { Icon(Icons.Filled.Lock, null) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
+            if (!ownerBootstrap) {
+                OutlinedTextField(
+                    value = temporaryPin, onValueChange = { temporaryPin = it.filter(Char::isDigit).take(12) },
+                    label = { Text("Temporary PIN issued to you") }, leadingIcon = { Icon(Icons.Filled.Lock, null) },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)
+                )
+                Spacer(Modifier.height(12.dp))
+            } else {
+                Text("Your Platform Owner account is reserved for you. Create your own private PIN to finish registration.", color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
+                Spacer(Modifier.height(12.dp))
+            }
+            OutlinedTextField(
+                value = newPin, onValueChange = { newPin = it.filter(Char::isDigit).take(12) },
+                label = { Text("Create your PIN (8–12 digits)") }, leadingIcon = { Icon(Icons.Filled.VpnKey, null) },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)
+            )
             Spacer(Modifier.height(12.dp))
-            OutlinedTextField(value = newPin, onValueChange = { newPin = it.filter(Char::isDigit).take(12) }, label = { Text("Choose your new PIN (8–12 digits)") }, leadingIcon = { Icon(Icons.Filled.VpnKey, null) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
-            Spacer(Modifier.height(12.dp))
-            OutlinedTextField(value = confirmPin, onValueChange = { confirmPin = it.filter(Char::isDigit).take(12) }, label = { Text("Confirm new PIN") }, leadingIcon = { Icon(Icons.Filled.Lock, null) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
+            OutlinedTextField(
+                value = confirmPin, onValueChange = { confirmPin = it.filter(Char::isDigit).take(12) },
+                label = { Text("Confirm your PIN") }, leadingIcon = { Icon(Icons.Filled.Lock, null) },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)
+            )
         }
-        if (message.isNotBlank()) { Spacer(Modifier.height(12.dp)); Text(message, color = if (message.startsWith("Account activated")) Teal else MaterialTheme.colorScheme.error, fontSize = 13.sp) }
+        if (message.isNotBlank()) {
+            Spacer(Modifier.height(12.dp))
+            Text(message, color = if (message.startsWith("Account activated")) Teal else MaterialTheme.colorScheme.error, fontSize = 13.sp)
+        }
         Spacer(Modifier.height(22.dp))
         Button(
             onClick = {
@@ -523,26 +623,31 @@ private fun LoginScreen(
                 else onLogin(accountId, pin)
             },
             enabled = !busy && accountId.isNotBlank() && if (activationMode) {
-                temporaryPin.length in 8..12 && newPin.length in 8..12 && newPin == confirmPin && newPin != temporaryPin
+                newPin.length in 8..12 && newPin == confirmPin && (ownerBootstrap || (temporaryPin.length in 8..12 && newPin != temporaryPin))
             } else pin.length in 8..12,
             modifier = Modifier.fillMaxWidth().height(54.dp),
             shape = RoundedCornerShape(15.dp)
         ) {
             if (busy) CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
-            else Text(if (activationMode) "Activate account" else "Sign in securely", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            else Text(
+                when {
+                    activationMode && ownerBootstrap -> "Complete registration"
+                    activationMode -> "Activate account"
+                    else -> "Sign in securely"
+                }, fontWeight = FontWeight.SemiBold, fontSize = 16.sp
+            )
         }
-        Spacer(Modifier.height(10.dp))
-        TextButton(onClick = {
-            activationMode = !activationMode
-            pin = ""
-            temporaryPin = ""
-            newPin = ""
-            confirmPin = ""
-        }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-            Text(if (activationMode) "Back to sign in" else "I have a temporary PIN — activate account")
+        if (!ownerBootstrap) {
+            Spacer(Modifier.height(10.dp))
+            TextButton(onClick = {
+                activationMode = !activationMode
+                pin = ""; temporaryPin = ""; newPin = ""; confirmPin = ""
+            }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                Text(if (activationMode) "Back to sign in" else "I have a temporary PIN — activate account")
+            }
         }
         Spacer(Modifier.height(8.dp))
-        Text("Forgot your PIN? Contact your SACCO administrator for the verified recovery process.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+        Text("Forgot your PIN? Use the verified account recovery process.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
     }
 }
 
@@ -916,6 +1021,31 @@ private suspend fun createOwnerSacco(session: SaccoSession, name: String, distri
     requestJson(req)
 }
 
+private suspend fun activateOwnerTenant(
+    session: SaccoSession,
+    saccoId: String,
+    chairpersonName: String,
+    chairpersonPhone: String,
+    chairpersonEmail: String,
+    chairpersonAddress: String
+): JSONObject = withContext(Dispatchers.IO) {
+    if (session.role != "platform_owner") throw IOException("Only the Platform Owner can activate a new SACCO tenant.")
+    if (chairpersonName.trim().length < 2) throw IOException("Enter the chairperson's full name.")
+    val payload = JSONObject()
+        .put("sacco_id", saccoId)
+        .put("chairperson_name", chairpersonName.trim())
+        .put("chairperson_phone", chairpersonPhone.trim())
+        .put("chairperson_email", chairpersonEmail.trim())
+        .put("chairperson_address", chairpersonAddress.trim())
+    val req = Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-owner-activate-tenant")
+        .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+        .header("Authorization", "Bearer ${session.accessToken}")
+        .header("Content-Type", "application/json")
+        .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+        .build()
+    requestJson(req)
+}
+
 @Composable
 private fun OwnerDirectoryScreen(session: SaccoSession, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -931,6 +1061,12 @@ private fun OwnerDirectoryScreen(session: SaccoSession, onBack: () -> Unit) {
     var phone by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var expected by remember { mutableStateOf("50") }
+    var activateSaccoId by remember { mutableStateOf<String?>(null) }
+    var chairpersonName by remember { mutableStateOf("") }
+    var chairpersonPhone by remember { mutableStateOf("") }
+    var chairpersonEmail by remember { mutableStateOf("") }
+    var chairpersonAddress by remember { mutableStateOf("") }
+    var issuedChairpersonAccount by remember { mutableStateOf<JSONObject?>(null) }
     var refresh by remember { mutableIntStateOf(0) }
     LaunchedEffect(refresh) {
         loading = true
@@ -939,7 +1075,7 @@ private fun OwnerDirectoryScreen(session: SaccoSession, onBack: () -> Unit) {
         finally { loading = false }
     }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), contentPadding = PaddingValues(top = 16.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { SectionHeading("SACCO Directory", "Register SACCO tenants and monitor their status and member totals. Private financial records are never shown here.") }
+        item { SectionHeading("SACCO Directory", "Register SACCO tenants. You activate each new SACCO together with its first chairperson only. The chairperson manages all other member accounts. Private financial records are never shown here.") }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(onClick = { showForm = !showForm; error = "" }, modifier = Modifier.weight(1f)) { Text(if (showForm) "Close registration" else "Register a SACCO") }
@@ -983,6 +1119,48 @@ private fun OwnerDirectoryScreen(session: SaccoSession, onBack: () -> Unit) {
                     Text(listOf(row.town,row.district).filter{it.isNotBlank()}.joinToString(", "),color=Muted,fontSize=12.sp)
                     Row(horizontalArrangement=Arrangement.spacedBy(16.dp)) { Text("Members: ${row.actualMembers}",color=Navy,fontSize=12.sp); Text("Expected: ${row.expectedMembers}",color=Muted,fontSize=12.sp) }
                     Text(if(row.lastSync.isBlank()) "Last sync: Not yet reported" else "Last sync: ${row.lastSync}",color=Muted,fontSize=11.sp)
+                    if (row.status == "trial") {
+                        Spacer(Modifier.height(6.dp))
+                        if (activateSaccoId == row.id) {
+                            Text("Activate this SACCO and create its first chairperson account", color=Navy, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
+                            OutlinedTextField(chairpersonName,{chairpersonName=it.take(160)},label={Text("Chairperson full name *")},singleLine=true,modifier=Modifier.fillMaxWidth())
+                            OutlinedTextField(chairpersonPhone,{chairpersonPhone=it.take(50)},label={Text("Chairperson phone")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Phone),modifier=Modifier.fillMaxWidth())
+                            OutlinedTextField(chairpersonEmail,{chairpersonEmail=it.take(254)},label={Text("Chairperson email (optional)")},singleLine=true,modifier=Modifier.fillMaxWidth())
+                            OutlinedTextField(chairpersonAddress,{chairpersonAddress=it.take(300)},label={Text("Chairperson address (optional)")},singleLine=true,modifier=Modifier.fillMaxWidth())
+                            Button(onClick={
+                                scope.launch {
+                                    busy=true; error=""
+                                    try {
+                                        val result=activateOwnerTenant(session,row.id,chairpersonName,chairpersonPhone,chairpersonEmail,chairpersonAddress)
+                                        val account=result.optJSONObject("chairperson_account") ?: throw IOException("Chairperson account details were not returned.")
+                                        issuedChairpersonAccount=JSONObject(account.toString()).put("sacco_id",row.id).put("sacco_name",row.name)
+                                        activateSaccoId=null; chairpersonName="";chairpersonPhone="";chairpersonEmail="";chairpersonAddress=""
+                                        error="Activated ${row.name}. The first chairperson account is ready."
+                                        refresh++
+                                    } catch(e:Exception) { error=e.message ?: "SACCO activation failed." }
+                                    finally { busy=false }
+                                }
+                            },enabled=!busy && chairpersonName.trim().length>=2,modifier=Modifier.fillMaxWidth()) {
+                                if(busy) CircularProgressIndicator(Modifier.size(18.dp),color=Color.White,strokeWidth=2.dp) else Text("Activate SACCO and chairperson")
+                            }
+                            TextButton(onClick={activateSaccoId=null;chairpersonName="";chairpersonPhone="";chairpersonEmail="";chairpersonAddress=""},enabled=!busy,modifier=Modifier.fillMaxWidth()){Text("Cancel")}
+                        } else {
+                            Button(onClick={activateSaccoId=row.id;chairpersonName="";chairpersonPhone="";chairpersonEmail="";chairpersonAddress=""},modifier=Modifier.fillMaxWidth()) {
+                                Text("Activate SACCO + first chairperson")
+                            }
+                        }
+                    }
+                    val issued = issuedChairpersonAccount
+                    if (issued != null && issued.optString("sacco_id") == row.id) {
+                        Surface(color=PaleBlue,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp),verticalArrangement=Arrangement.spacedBy(5.dp)) {
+                                Text("Chairperson activation details — give these privately to the chairperson",color=Navy,fontWeight=FontWeight.Bold,fontSize=13.sp)
+                                Text("Account ID: ${issued.optString("account_id")}",color=Navy,fontWeight=FontWeight.SemiBold,fontSize=14.sp)
+                                Text("One-time PIN: ${issued.optString("temporary_pin")}",color=Navy,fontWeight=FontWeight.SemiBold,fontSize=14.sp)
+                                Text("The chairperson must create a personal PIN at first sign-in. You do not activate ordinary member accounts.",color=Muted,fontSize=11.sp,lineHeight=15.sp)
+                            }
+                        }
+                    }
                 }
             }
         }
