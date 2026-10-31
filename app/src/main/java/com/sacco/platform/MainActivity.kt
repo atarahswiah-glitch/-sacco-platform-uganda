@@ -122,6 +122,22 @@ private fun SaccoApp() {
                                     busy = false
                                 }
                             }
+                        },
+                        onActivate = { accountId, temporaryPin, newPin ->
+                            scope.launch {
+                                busy = true
+                                statusMessage = ""
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        activateAccount(accountId, temporaryPin, newPin)
+                                    }
+                                    statusMessage = "Account activated. Sign in with your new PIN."
+                                } catch (e: Exception) {
+                                    statusMessage = e.message ?: "Account activation failed. Please try again."
+                                } finally {
+                                    busy = false
+                                }
+                            }
                         }
                     )
                 }
@@ -227,6 +243,23 @@ private suspend fun loginAndLoadContext(accountId: String, pin: String): SaccoSe
     )
 }
 
+private fun activateAccount(accountId: String, temporaryPin: String, newPin: String) {
+    if (accountId.isBlank()) throw IOException("Enter your account ID.")
+    if (!temporaryPin.matches(Regex("^[0-9]{8,12}$"))) throw IOException("Enter the temporary PIN issued to you.")
+    if (!newPin.matches(Regex("^[0-9]{8,12}$"))) throw IOException("Your new PIN must contain 8–12 digits.")
+    if (temporaryPin == newPin) throw IOException("Choose a new PIN different from the temporary PIN.")
+    val payload = JSONObject()
+        .put("account_id", accountId.trim())
+        .put("temporary_pin", temporaryPin)
+        .put("new_pin", newPin)
+    val request = Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-activate-account")
+        .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+        .header("Content-Type", "application/json")
+        .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+        .build()
+    requestJson(request)
+}
+
 private fun requestJson(request: Request): JSONObject {
     http.newCall(request).execute().use { response ->
         val body = response.body?.string().orEmpty()
@@ -239,6 +272,9 @@ private fun requestJson(request: Request): JSONObject {
 }
 private fun friendlyError(code: String, httpCode: Int): String = when (code) {
     "invalid_account_id_or_pin" -> "The account ID or PIN is incorrect, or sign-in is temporarily locked."
+    "account_activation_required" -> "This is a new account. Select “I have a temporary PIN — activate account” and choose your private PIN."
+    "invalid_activation_details" -> "The Account ID or temporary PIN is incorrect, or activation is temporarily locked."
+    "account_already_activated" -> "This account is already activated. Sign in with your current PIN."
     "account_not_authorized" -> "This account has no active SACCO role. Contact your SACCO administrator."
     "multiple_active_sacco_memberships" -> "This account is linked to more than one active SACCO. Contact support to resolve it."
     "sacco_context_unavailable" -> "Your SACCO profile could not be loaded. Please try again."
@@ -354,9 +390,18 @@ private fun PlatformOwnerIdScreen(
 }
 
 @Composable
-private fun LoginScreen(busy: Boolean, message: String, onLogin: (String, String) -> Unit) {
+private fun LoginScreen(
+    busy: Boolean,
+    message: String,
+    onLogin: (String, String) -> Unit,
+    onActivate: (String, String, String) -> Unit
+) {
     var accountId by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
+    var temporaryPin by remember { mutableStateOf("") }
+    var newPin by remember { mutableStateOf("") }
+    var confirmPin by remember { mutableStateOf("") }
+    var activationMode by remember { mutableStateOf(false) }
     var showPin by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().background(Canvas).padding(horizontal = 24.dp), verticalArrangement = Arrangement.Center) {
         Box(Modifier.size(68.dp).background(Blue, RoundedCornerShape(22.dp)), contentAlignment = Alignment.Center) {
@@ -366,21 +411,49 @@ private fun LoginScreen(busy: Boolean, message: String, onLogin: (String, String
         Text("SACCO Platform", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Navy)
         Text("Uganda", fontSize = 17.sp, color = Blue, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(10.dp))
-        Text("Secure access to your SACCO", color = Muted, fontSize = 15.sp)
+        Text(if (activationMode) "Activate your new account" else "Secure access to your SACCO", color = Muted, fontSize = 15.sp)
         Spacer(Modifier.height(30.dp))
         OutlinedTextField(value = accountId, onValueChange = { accountId = it.uppercase().take(24) }, label = { Text("Account ID") }, leadingIcon = { Icon(Icons.Filled.Badge, null) }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
         Spacer(Modifier.height(14.dp))
-        OutlinedTextField(value = pin, onValueChange = { pin = it.filter(Char::isDigit).take(12) }, label = { Text("PIN (8–12 digits)") }, leadingIcon = { Icon(Icons.Filled.Lock, null) }, trailingIcon = { IconButton(onClick = { showPin = !showPin }) { Icon(if (showPin) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null) } }, visualTransformation = if (showPin) VisualTransformation.None else PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
-        if (message.isNotBlank()) { Spacer(Modifier.height(12.dp)); Text(message, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
-        Spacer(Modifier.height(22.dp))
-        Button(onClick = { onLogin(accountId, pin) }, enabled = !busy && accountId.isNotBlank() && pin.length in 8..12, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(15.dp)) {
-            if (busy) CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp) else Text("Sign in securely", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        if (!activationMode) {
+            OutlinedTextField(value = pin, onValueChange = { pin = it.filter(Char::isDigit).take(12) }, label = { Text("PIN (8–12 digits)") }, leadingIcon = { Icon(Icons.Filled.Lock, null) }, trailingIcon = { IconButton(onClick = { showPin = !showPin }) { Icon(if (showPin) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null) } }, visualTransformation = if (showPin) VisualTransformation.None else PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
+        } else {
+            OutlinedTextField(value = temporaryPin, onValueChange = { temporaryPin = it.filter(Char::isDigit).take(12) }, label = { Text("Temporary PIN issued to you") }, leadingIcon = { Icon(Icons.Filled.Lock, null) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(value = newPin, onValueChange = { newPin = it.filter(Char::isDigit).take(12) }, label = { Text("Choose your new PIN (8–12 digits)") }, leadingIcon = { Icon(Icons.Filled.VpnKey, null) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(value = confirmPin, onValueChange = { confirmPin = it.filter(Char::isDigit).take(12) }, label = { Text("Confirm new PIN") }, leadingIcon = { Icon(Icons.Filled.Lock, null) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
         }
-        Spacer(Modifier.height(18.dp))
+        if (message.isNotBlank()) { Spacer(Modifier.height(12.dp)); Text(message, color = if (message.startsWith("Account activated")) Teal else MaterialTheme.colorScheme.error, fontSize = 13.sp) }
+        Spacer(Modifier.height(22.dp))
+        Button(
+            onClick = {
+                if (activationMode) onActivate(accountId, temporaryPin, newPin)
+                else onLogin(accountId, pin)
+            },
+            enabled = !busy && accountId.isNotBlank() && if (activationMode) {
+                temporaryPin.length in 8..12 && newPin.length in 8..12 && newPin == confirmPin && newPin != temporaryPin
+            } else pin.length in 8..12,
+            modifier = Modifier.fillMaxWidth().height(54.dp),
+            shape = RoundedCornerShape(15.dp)
+        ) {
+            if (busy) CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+            else Text(if (activationMode) "Activate account" else "Sign in securely", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        }
+        Spacer(Modifier.height(10.dp))
+        TextButton(onClick = {
+            activationMode = !activationMode
+            pin = ""
+            temporaryPin = ""
+            newPin = ""
+            confirmPin = ""
+        }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+            Text(if (activationMode) "Back to sign in" else "I have a temporary PIN — activate account")
+        }
+        Spacer(Modifier.height(8.dp))
         Text("Forgot your PIN? Contact your SACCO administrator for the verified recovery process.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
     }
 }
-
 @Composable
 private fun TopAppBarSacco(title: String, subtitle: String, onBack: (() -> Unit)?, onLogout: () -> Unit) {
     Surface(color = Color.White, shadowElevation = 1.dp) {
