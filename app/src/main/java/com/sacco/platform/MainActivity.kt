@@ -275,6 +275,8 @@ private fun friendlyError(code: String, httpCode: Int): String = when (code) {
     "account_activation_required" -> "This is a new account. Select “I have a temporary PIN — activate account” and choose your private PIN."
     "invalid_activation_details" -> "The Account ID or temporary PIN is incorrect, or activation is temporarily locked."
     "account_already_activated" -> "This account is already activated. Sign in with your current PIN."
+    "activation_completion_failed_retry" -> "Your PIN activation could not be finalised. The temporary PIN has been restored; retry activation."
+    "activation_recovery_required_contact_administrator" -> "Activation needs administrator recovery. Do not keep retrying; contact your SACCO administrator."
     "account_not_authorized" -> "This account has no active SACCO role. Contact your SACCO administrator."
     "multiple_active_sacco_memberships" -> "This account is linked to more than one active SACCO. Contact support to resolve it."
     "sacco_context_unavailable" -> "Your SACCO profile could not be loaded. Please try again."
