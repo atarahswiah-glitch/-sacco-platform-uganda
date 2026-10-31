@@ -103,12 +103,25 @@ private fun SaccoApp() {
                 if (!welcomeStep) {
                     WelcomeScreen(onGetStarted = { welcomeStep = true })
                 } else {
-                    PlatformOwnerIdScreen(
+                    LoginScreen(
                         busy = busy,
                         message = statusMessage,
-                        onBack = { welcomeStep = false; statusMessage = "" },
-                        onContinue = { ownerId ->
-                            statusMessage = "Owner ID entered. Registration verification will be connected before this step can activate your account."
+                        onLogin = { accountId, pin ->
+                            scope.launch {
+                                busy = true
+                                statusMessage = ""
+                                try {
+                                    session = withContext(Dispatchers.IO) {
+                                        loginAndLoadContext(accountId, pin)
+                                    }
+                                    destination = Destination.HOME
+                                    feature = null
+                                } catch (e: Exception) {
+                                    statusMessage = e.message ?: "Sign-in failed. Please try again."
+                                } finally {
+                                    busy = false
+                                }
+                            }
                         }
                     )
                 }
@@ -312,7 +325,7 @@ private fun PlatformOwnerIdScreen(
         Spacer(Modifier.height(18.dp))
         Text("Platform Owner Registration", color = Navy, fontSize = 25.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
-        Text("Enter the Platform Owner ID generated for this app. You can generate and retrieve the ID from the Termux terminal.", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
+        Text("Platform Owner access uses the account ID and PIN issued through the authorised account setup process. IDs are assigned by the platform, not generated manually in Termux.", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
         Spacer(Modifier.height(24.dp))
         OutlinedTextField(
             value = ownerId,
