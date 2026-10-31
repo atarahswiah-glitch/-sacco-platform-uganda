@@ -880,8 +880,6 @@ private fun MemberManagementScreen(session:SaccoSession,onBack:()->Unit) {
  }}
 }
 
-@Composable
-
 private data class OwnerSaccoRow(
     val id: String, val name: String, val motherId: String, val code: String,
     val status: String, val district: String, val town: String,
@@ -992,6 +990,7 @@ private fun OwnerDirectoryScreen(session: SaccoSession, onBack: () -> Unit) {
     }
 }
 
+@Composable
 private fun FeatureScreen(title: String, session: SaccoSession, onBack: () -> Unit) {
     if (title == "Members") { MemberManagementScreen(session, onBack); return }
     if (title == "SACCO Directory" && session.role == "platform_owner") { OwnerDirectoryScreen(session, onBack); return }
