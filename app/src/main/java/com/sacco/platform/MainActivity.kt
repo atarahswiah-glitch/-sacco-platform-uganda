@@ -881,8 +881,120 @@ private fun MemberManagementScreen(session:SaccoSession,onBack:()->Unit) {
 }
 
 @Composable
+
+private data class OwnerSaccoRow(
+    val id: String, val name: String, val motherId: String, val code: String,
+    val status: String, val district: String, val town: String,
+    val expectedMembers: Int, val actualMembers: Int, val lastSync: String
+)
+
+private suspend fun fetchOwnerDirectory(session: SaccoSession): List<OwnerSaccoRow> = withContext(Dispatchers.IO) {
+    if (session.role != "platform_owner") throw IOException("Platform Owner access is required.")
+    val req = Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-owner-directory")
+        .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+        .header("Authorization", "Bearer ${session.accessToken}").get().build()
+    val root = requestJson(req)
+    val arr = root.optJSONArray("saccos") ?: JSONArray()
+    buildList {
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            add(OwnerSaccoRow(o.optString("id"),o.optString("name"),o.optString("mother_id"),o.optString("sacco_code"),o.optString("status"),o.optString("district"),o.optString("town_village"),o.optInt("expected_member_count"),o.optInt("actual_member_count"),o.optString("last_sync_at")))
+        }
+    }
+}
+
+private suspend fun createOwnerSacco(session: SaccoSession, name: String, district: String, town: String, address: String, phone: String, email: String, expected: Int) = withContext(Dispatchers.IO) {
+    if (session.role != "platform_owner") throw IOException("Only the Platform Owner can register a SACCO.")
+    if (name.trim().length < 2) throw IOException("Enter the SACCO name.")
+    if (district.trim().length < 2) throw IOException("Enter the district.")
+    if (expected < 0) throw IOException("Expected member count cannot be negative.")
+    val payload = JSONObject().put("name",name.trim()).put("district",district.trim())
+        .put("town_village",town.trim()).put("physical_address",address.trim())
+        .put("contact_phone",phone.trim()).put("contact_email",email.trim())
+        .put("expected_member_count",expected).put("status","trial").put("currency","UGX")
+    val req = Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-create")
+        .header("apikey",SUPABASE_PUBLISHABLE_KEY).header("Authorization","Bearer ${session.accessToken}")
+        .header("Content-Type","application/json").post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+    requestJson(req)
+}
+
+@Composable
+private fun OwnerDirectoryScreen(session: SaccoSession, onBack: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var rows by remember { mutableStateOf<List<OwnerSaccoRow>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    var showForm by remember { mutableStateOf(false) }
+    var name by remember { mutableStateOf("") }
+    var district by remember { mutableStateOf("") }
+    var town by remember { mutableStateOf("") }
+    var address by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var expected by remember { mutableStateOf("50") }
+    var refresh by remember { mutableIntStateOf(0) }
+    LaunchedEffect(refresh) {
+        loading = true
+        try { rows = fetchOwnerDirectory(session); error = "" }
+        catch (e: Exception) { error = e.message ?: "Could not load SACCO directory." }
+        finally { loading = false }
+    }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), contentPadding = PaddingValues(top = 16.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { SectionHeading("SACCO Directory", "Register SACCO tenants and monitor their status and member totals. Private financial records are never shown here.") }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = { showForm = !showForm; error = "" }, modifier = Modifier.weight(1f)) { Text(if (showForm) "Close registration" else "Register a SACCO") }
+                OutlinedButton(onClick = { refresh++ }, enabled = !loading && !busy) { Icon(Icons.Filled.Refresh,null); Text("Refresh") }
+            }
+        }
+        if (showForm) item {
+            Surface(color = Color.White, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Text("New SACCO registration", color = Navy, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    OutlinedTextField(name,{name=it.take(160)},label={Text("SACCO name *")},singleLine=true,modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(district,{district=it.take(120)},label={Text("District *")},singleLine=true,modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(town,{town=it.take(160)},label={Text("Town / village")},singleLine=true,modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(address,{address=it.take(300)},label={Text("Physical address")},modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(phone,{phone=it.take(50)},label={Text("General contact phone")},singleLine=true,modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(email,{email=it.take(254)},label={Text("Contact email (optional)")},singleLine=true,modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(expected,{expected=it.filter(Char::isDigit).take(7)},label={Text("Expected member count")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),modifier=Modifier.fillMaxWidth())
+                    Text("The system generates the permanent SACCO code and Mother ID automatically. New registrations start in Trial status.",color=Muted,fontSize=12.sp,lineHeight=17.sp)
+                    Button(onClick={
+                        val count=expected.toIntOrNull() ?: 50
+                        scope.launch { busy=true; error=""
+                            try { val created=createOwnerSacco(session,name,district,town,address,phone,email,count); val sc=created.optJSONObject("sacco") ?: JSONObject(); error="Created ${sc.optString("name")} • Mother ID ${sc.optString("mother_id")}"; name="";district="";town="";address="";phone="";email="";expected="50";showForm=false;refresh++ }
+                            catch(e:Exception){error=e.message ?: "SACCO registration failed."}
+                            finally{busy=false}
+                        }
+                    },enabled=!busy && name.trim().length>=2 && district.trim().length>=2,modifier=Modifier.fillMaxWidth()) {
+                        if(busy) CircularProgressIndicator(Modifier.size(18.dp),color=Color.White,strokeWidth=2.dp) else Text("Create SACCO")
+                    }
+                }
+            }
+        }
+        if(error.isNotBlank()) item { Text(error,color=if(error.startsWith("Created")) Teal else MaterialTheme.colorScheme.error,fontSize=13.sp) }
+        if(loading) item { Box(Modifier.fillMaxWidth().padding(24.dp),contentAlignment=Alignment.Center){CircularProgressIndicator()} }
+        else if(rows.isEmpty()) item { EmptyState(Icons.Filled.Domain,"No SACCOs registered","New SACCO tenants will appear here after registration.") }
+        else items(rows,key={it.id}) { row ->
+            Surface(color=Color.White,shape=RoundedCornerShape(17.dp),modifier=Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(15.dp),verticalArrangement=Arrangement.spacedBy(5.dp)) {
+                    Row(verticalAlignment=Alignment.CenterVertically) { Text(row.name,color=Navy,fontWeight=FontWeight.Bold,fontSize=16.sp,modifier=Modifier.weight(1f)); Text(row.status.replaceFirstChar{it.uppercase()},color=if(row.status=="active")Teal else Muted,fontSize=11.sp,fontWeight=FontWeight.SemiBold) }
+                    Text("Mother ID: ${row.motherId}",color=Blue,fontWeight=FontWeight.SemiBold,fontSize=13.sp)
+                    Text("SACCO code: ${row.code}",color=Muted,fontSize=11.sp)
+                    Text(listOf(row.town,row.district).filter{it.isNotBlank()}.joinToString(", "),color=Muted,fontSize=12.sp)
+                    Row(horizontalArrangement=Arrangement.spacedBy(16.dp)) { Text("Members: ${row.actualMembers}",color=Navy,fontSize=12.sp); Text("Expected: ${row.expectedMembers}",color=Muted,fontSize=12.sp) }
+                    Text(if(row.lastSync.isBlank()) "Last sync: Not yet reported" else "Last sync: ${row.lastSync}",color=Muted,fontSize=11.sp)
+                }
+            }
+        }
+        item { OutlinedButton(onClick=onBack,modifier=Modifier.fillMaxWidth()){Text("Back to dashboard")} }
+    }
+}
+
 private fun FeatureScreen(title: String, session: SaccoSession, onBack: () -> Unit) {
     if (title == "Members") { MemberManagementScreen(session, onBack); return }
+    if (title == "SACCO Directory" && session.role == "platform_owner") { OwnerDirectoryScreen(session, onBack); return }
     val description = when (title) {
         "SACCO Directory" -> "Tenant registration, activation status, member totals, and technical health. Private financial records are not available to the Platform Owner."
         "Platform Health" -> "Connection and synchronization health indicators for registered SACCO tenants."
