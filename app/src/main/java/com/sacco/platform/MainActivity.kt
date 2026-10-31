@@ -364,7 +364,7 @@ private fun requestJson(request: Request): JSONObject {
     }
 }
 private fun friendlyError(code: String, httpCode: Int): String = when (code) {
-    "account_not_found" -> "Account not found. Check the Account ID issued by the system.",
+    "account_not_found" -> "Account not found. Check the Account ID issued by the system."
     "invalid_account_id_or_pin" -> "The account ID or PIN is incorrect, or sign-in is temporarily locked."
     "account_activation_required" -> "This is a new account. Select “I have a temporary PIN — activate account” and choose your private PIN."
     "invalid_activation_details" -> "The Account ID or temporary PIN is incorrect, or activation is temporarily locked."
