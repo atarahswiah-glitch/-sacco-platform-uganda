@@ -374,6 +374,14 @@ private fun requestJson(request: Request): JSONObject {
 }
 private fun friendlyError(code: String, httpCode: Int): String = when (code) {
     "account_not_found" -> "Account not found. Check the Account ID issued by the system."
+    "account_lookup_locked" -> "Too many account checks were attempted. Wait before trying again."
+    "account_lookup_unavailable" -> "Account verification is temporarily unavailable. Check your connection and try again."
+    "platform_owner_required" -> "Only the Platform Owner can activate a SACCO tenant."
+    "sacco_not_pending_owner_activation" -> "This SACCO is not awaiting first-time activation."
+    "chairperson_already_activated" -> "This SACCO already has its first chairperson account."
+    "chairperson_name_required" -> "Enter the first chairperson's full name."
+    "invalid_chairperson_email" -> "Enter a valid chairperson email address."
+    "tenant_activation_failed_retry" -> "The tenant activation could not be completed. The SACCO remains pending; retry once the connection is stable."
     "invalid_account_id_or_pin" -> "The account ID or PIN is incorrect, or sign-in is temporarily locked."
     "account_activation_required" -> "This is a new account. Select “I have a temporary PIN — activate account” and choose your private PIN."
     "invalid_activation_details" -> "The Account ID or temporary PIN is incorrect, or activation is temporarily locked."
