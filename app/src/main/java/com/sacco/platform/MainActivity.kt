@@ -300,6 +300,25 @@ private fun apiRequest(session: SaccoSession, path: String, method: String = "GE
     }
 }
 
+
+private data class SaccoMemberRow(val id:String,val memberId:String,val memberNumber:String,val fullName:String,val phone:String,val hasLogin:Boolean)
+private data class OneTimeAccount(val accountId:String,val temporaryPin:String,val memberName:String,val role:String)
+private suspend fun fetchSaccoMembers(session:SaccoSession):List<SaccoMemberRow> = withContext(Dispatchers.IO) {
+ val sid=session.saccoId ?: throw IOException("No SACCO context.")
+ val raw=apiRequest(session,"/rest/v1/sacco_members?select=id,member_id,member_number,full_name,phone,user_id&status=eq.active&sacco_id=eq."+sid+"&order=created_at.desc&limit=250")
+ val a=JSONArray(raw)
+ (0 until a.length()).map { i -> val r=a.getJSONObject(i); val uid=r.optString("user_id"); SaccoMemberRow(r.optString("id"),r.optString("member_id"),r.optString("member_number"),r.optString("full_name"),r.optString("phone"),uid.isNotBlank()&&uid!="null") }
+}
+private suspend fun provisionMemberAccount(session:SaccoSession,m:SaccoMemberRow,role:String):OneTimeAccount = withContext(Dispatchers.IO) {
+ val sid=session.saccoId ?: throw IOException("No SACCO context.")
+ val body=JSONObject().put("sacco_id",sid).put("member_row_id",m.id).put("role",role)
+ val req=Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-provision-member-account").header("apikey",SUPABASE_PUBLISHABLE_KEY).header("Authorization","Bearer "+session.accessToken).header("Content-Type","application/json").post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+ val obj=requestJson(req).optJSONObject("account") ?: throw IOException("Incomplete account response.")
+ val result=OneTimeAccount(obj.optString("account_id"),obj.optString("temporary_pin"),m.fullName,obj.optString("role",role))
+ if(result.accountId.isBlank()||result.temporaryPin.isBlank()) throw IOException("Missing one-time activation details. Contact support before retrying.")
+ result
+}
+
 private suspend fun fetchNotifications(session: SaccoSession): List<Notice> = withContext(Dispatchers.IO) {
     val text = apiRequest(session, "/rest/v1/sacco_notifications?select=id,title,body,category,created_at,read_at&order=created_at.desc&limit=50")
     val array = JSONArray(text)
@@ -677,8 +696,69 @@ private fun saveSetting(session: SaccoSession, key: String, value: Boolean, succ
     scope.launch { setBusy(true); try { updateSettings(session, JSONObject().put(key, value)); success(); onMessage("Setting saved.") } catch (e: Exception) { onMessage(e.message ?: "Could not save setting.") } finally { setBusy(false) } }
 }
 
+
+@Composable
+private fun MemberManagementScreen(session:SaccoSession,onBack:()->Unit) {
+ var members by remember { mutableStateOf<List<SaccoMemberRow>>(emptyList()) }
+ var loading by remember { mutableStateOf(true) }
+ var error by remember { mutableStateOf("") }
+ var busyId by remember { mutableStateOf("") }
+ var role by remember { mutableStateOf("member") }
+ var menu by remember { mutableStateOf(false) }
+ var account by remember { mutableStateOf<OneTimeAccount?>(null) }
+ var reload by remember { mutableIntStateOf(0) }
+ val scope=rememberCoroutineScope()
+ val canManage=session.role=="chairperson"||session.role=="sacco_admin"
+ val roles=listOf("member" to "Ordinary member","chairperson" to "Chairperson","treasurer" to "Treasurer","secretary" to "Secretary","sacco_admin" to "SACCO administrator","credit_officer" to "Credit / loans officer","assistant" to "Assistant")
+ LaunchedEffect(session.saccoId,reload) { loading=true; error=""; try { members=fetchSaccoMembers(session) } catch(e:Exception){error=e.message ?: "Could not load members."} finally{loading=false} }
+ Column(Modifier.fillMaxSize().padding(16.dp)) {
+  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
+   Column(Modifier.weight(1f)){Text("SACCO members",color=Navy,fontSize=22.sp,fontWeight=FontWeight.Bold);Text("Active members • "+session.saccoName,color=Muted,fontSize=12.sp)}
+   IconButton(onClick={reload++},enabled=!loading){Icon(Icons.Filled.Refresh,"Refresh")}
+  }
+  if(!canManage) Text("Only the chairperson or an authorised SACCO administrator can create member login accounts.",color=Muted,fontSize=13.sp)
+  else Surface(color=Color.White,shape=RoundedCornerShape(15.dp),modifier=Modifier.fillMaxWidth()) {
+   Column(Modifier.padding(12.dp)){Text("Role for new account",color=Navy,fontWeight=FontWeight.SemiBold)
+    Box { OutlinedButton(onClick={menu=true},modifier=Modifier.fillMaxWidth()){Text(roles.first{it.first==role}.second,modifier=Modifier.weight(1f));Icon(Icons.Filled.ArrowDropDown,null)}
+     DropdownMenu(expanded=menu,onDismissRequest={menu=false}){roles.forEach{r->DropdownMenuItem(text={Text(r.second)},onClick={role=r.first;menu=false})}}
+    }
+    Text("The platform generates the Account ID and one-time temporary PIN.",color=Muted,fontSize=12.sp)
+   }
+  }
+  if(error.isNotBlank()) Text(error,color=MaterialTheme.colorScheme.error,fontSize=12.sp,modifier=Modifier.padding(vertical=8.dp))
+  when {
+   loading -> Box(Modifier.fillMaxWidth().padding(35.dp),contentAlignment=Alignment.Center){CircularProgressIndicator()}
+   members.isEmpty() -> EmptyState(Icons.Filled.People,"No active members","Active registered members will appear here.")
+   else -> LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(9.dp),contentPadding=PaddingValues(vertical=10.dp)){
+    items(members,key={it.id}){m->Surface(color=Color.White,shape=RoundedCornerShape(15.dp),modifier=Modifier.fillMaxWidth()){
+     Column(Modifier.padding(13.dp)){
+      Text(m.fullName,color=Navy,fontWeight=FontWeight.SemiBold)
+      Text(m.memberId.ifBlank{m.memberNumber}+(if(m.phone.isNotBlank()) " • "+m.phone else ""),color=Muted,fontSize=11.sp)
+      if(m.hasLogin) Text("Login account already created",color=Teal,fontSize=12.sp)
+      else if(canManage) Button(onClick={busyId=m.id;error="";scope.launch{try{account=provisionMemberAccount(session,m,role);members=members.map{if(it.id==m.id)it.copy(hasLogin=true)else it}}catch(e:Exception){error=e.message ?: "Could not create account."}finally{busyId=""}},enabled=busyId.isBlank()&&account==null,modifier=Modifier.fillMaxWidth()){
+       if(busyId==m.id) CircularProgressIndicator(Modifier.size(18.dp),color=Color.White,strokeWidth=2.dp) else Text("Create login account")
+      }
+     }
+    }}
+   }
+  }
+  OutlinedButton(onClick=onBack,modifier=Modifier.fillMaxWidth()){Text("Back to dashboard")}
+ }
+ account?.let{a->androidx.compose.ui.window.Dialog(onDismissRequest={account=null}){
+  Surface(color=Color.White,shape=RoundedCornerShape(20.dp)){Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(9.dp)){
+   Icon(Icons.Filled.VerifiedUser,null,tint=Teal,modifier=Modifier.size(30.dp));Text("Account created",color=Navy,fontSize=20.sp,fontWeight=FontWeight.Bold)
+   Text("For "+a.memberName+" • "+a.role.replace('_',' '),color=Muted,fontSize=12.sp)
+   Text("Account ID",color=Muted,fontSize=12.sp);Text(a.accountId,color=Navy,fontSize=18.sp,fontWeight=FontWeight.Bold);Divider()
+   Text("One-time temporary PIN",color=Muted,fontSize=12.sp);Text(a.temporaryPin,color=Navy,fontSize=24.sp,fontWeight=FontWeight.Bold)
+   Text("Give this PIN privately to the member. They must activate the account and set their own private PIN. This PIN is shown once.",color=Color(0xFFB54708),fontSize=12.sp,lineHeight=17.sp)
+   Button(onClick={account=null;reload++},modifier=Modifier.fillMaxWidth()){Text("I have handed it over securely")}
+  }}
+ }}
+}
+
 @Composable
 private fun FeatureScreen(title: String, session: SaccoSession, onBack: () -> Unit) {
+    if (title == "Members") { MemberManagementScreen(session, onBack); return }
     val description = when (title) {
         "SACCO Directory" -> "Tenant registration, activation status, member totals, and technical health. Private financial records are not available to the Platform Owner."
         "Platform Health" -> "Connection and synchronization health indicators for registered SACCO tenants."
