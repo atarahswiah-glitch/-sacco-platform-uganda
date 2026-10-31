@@ -192,7 +192,16 @@ private fun SaccoApp() {
                             title = feature ?: destination.label,
                             subtitle = if (active.role == "platform_owner") "SACCO Platform Uganda" else active.saccoName,
                             onBack = if (feature != null) ({ feature = null }) else null,
-                            onLogout = { session = null; feature = null; statusMessage = "" }
+                            onLogout = {
+                                session = null
+                                feature = null
+                                statusMessage = ""
+                                loginStep = false
+                                welcomeStep = false
+                                pendingAccountId = ""
+                                ownerBootstrap = false
+                                activationRequired = false
+                            }
                         )
                     },
                     bottomBar = {
