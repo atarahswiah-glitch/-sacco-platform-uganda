@@ -454,7 +454,7 @@ private fun PlatformOwnerIdScreen(
         OutlinedTextField(
             value = ownerId,
             onValueChange = { ownerId = it.uppercase().filter { ch -> ch.isLetterOrDigit() || ch == '-' }.take(32) },
-            label = { Text("Platform Owner ID") },
+            label = { Text("Account ID") },
             leadingIcon = { Icon(Icons.Filled.Badge, null) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
