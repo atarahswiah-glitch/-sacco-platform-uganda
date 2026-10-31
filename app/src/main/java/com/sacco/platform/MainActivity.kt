@@ -1004,6 +1004,31 @@ private suspend fun createOwnerSacco(session: SaccoSession, name: String, distri
     requestJson(req)
 }
 
+private suspend fun activateOwnerTenant(
+    session: SaccoSession,
+    saccoId: String,
+    chairpersonName: String,
+    chairpersonPhone: String,
+    chairpersonEmail: String,
+    chairpersonAddress: String
+): JSONObject = withContext(Dispatchers.IO) {
+    if (session.role != "platform_owner") throw IOException("Only the Platform Owner can activate a new SACCO tenant.")
+    if (chairpersonName.trim().length < 2) throw IOException("Enter the chairperson's full name.")
+    val payload = JSONObject()
+        .put("sacco_id", saccoId)
+        .put("chairperson_name", chairpersonName.trim())
+        .put("chairperson_phone", chairpersonPhone.trim())
+        .put("chairperson_email", chairpersonEmail.trim())
+        .put("chairperson_address", chairpersonAddress.trim())
+    val req = Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-owner-activate-tenant")
+        .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+        .header("Authorization", "Bearer ${session.accessToken}")
+        .header("Content-Type", "application/json")
+        .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+        .build()
+    requestJson(req)
+}
+
 @Composable
 private fun OwnerDirectoryScreen(session: SaccoSession, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -1019,6 +1044,12 @@ private fun OwnerDirectoryScreen(session: SaccoSession, onBack: () -> Unit) {
     var phone by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var expected by remember { mutableStateOf("50") }
+    var activateSaccoId by remember { mutableStateOf<String?>(null) }
+    var chairpersonName by remember { mutableStateOf("") }
+    var chairpersonPhone by remember { mutableStateOf("") }
+    var chairpersonEmail by remember { mutableStateOf("") }
+    var chairpersonAddress by remember { mutableStateOf("") }
+    var issuedChairpersonAccount by remember { mutableStateOf<JSONObject?>(null) }
     var refresh by remember { mutableIntStateOf(0) }
     LaunchedEffect(refresh) {
         loading = true
@@ -1027,7 +1058,7 @@ private fun OwnerDirectoryScreen(session: SaccoSession, onBack: () -> Unit) {
         finally { loading = false }
     }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), contentPadding = PaddingValues(top = 16.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { SectionHeading("SACCO Directory", "Register SACCO tenants and monitor their status and member totals. Private financial records are never shown here.") }
+        item { SectionHeading("SACCO Directory", "Register SACCO tenants. You activate each new SACCO together with its first chairperson only. The chairperson manages all other member accounts. Private financial records are never shown here.") }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(onClick = { showForm = !showForm; error = "" }, modifier = Modifier.weight(1f)) { Text(if (showForm) "Close registration" else "Register a SACCO") }
@@ -1071,6 +1102,48 @@ private fun OwnerDirectoryScreen(session: SaccoSession, onBack: () -> Unit) {
                     Text(listOf(row.town,row.district).filter{it.isNotBlank()}.joinToString(", "),color=Muted,fontSize=12.sp)
                     Row(horizontalArrangement=Arrangement.spacedBy(16.dp)) { Text("Members: ${row.actualMembers}",color=Navy,fontSize=12.sp); Text("Expected: ${row.expectedMembers}",color=Muted,fontSize=12.sp) }
                     Text(if(row.lastSync.isBlank()) "Last sync: Not yet reported" else "Last sync: ${row.lastSync}",color=Muted,fontSize=11.sp)
+                    if (row.status == "trial") {
+                        Spacer(Modifier.height(6.dp))
+                        if (activateSaccoId == row.id) {
+                            Text("Activate this SACCO and create its first chairperson account", color=Navy, fontWeight=FontWeight.SemiBold, fontSize=13.sp)
+                            OutlinedTextField(chairpersonName,{chairpersonName=it.take(160)},label={Text("Chairperson full name *")},singleLine=true,modifier=Modifier.fillMaxWidth())
+                            OutlinedTextField(chairpersonPhone,{chairpersonPhone=it.take(50)},label={Text("Chairperson phone")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Phone),modifier=Modifier.fillMaxWidth())
+                            OutlinedTextField(chairpersonEmail,{chairpersonEmail=it.take(254)},label={Text("Chairperson email (optional)")},singleLine=true,modifier=Modifier.fillMaxWidth())
+                            OutlinedTextField(chairpersonAddress,{chairpersonAddress=it.take(300)},label={Text("Chairperson address (optional)")},singleLine=true,modifier=Modifier.fillMaxWidth())
+                            Button(onClick={
+                                scope.launch {
+                                    busy=true; error=""
+                                    try {
+                                        val result=activateOwnerTenant(session,row.id,chairpersonName,chairpersonPhone,chairpersonEmail,chairpersonAddress)
+                                        val account=result.optJSONObject("chairperson_account") ?: throw IOException("Chairperson account details were not returned.")
+                                        issuedChairpersonAccount=JSONObject(account.toString()).put("sacco_id",row.id).put("sacco_name",row.name)
+                                        activateSaccoId=null; chairpersonName="";chairpersonPhone="";chairpersonEmail="";chairpersonAddress=""
+                                        error="Activated ${row.name}. The first chairperson account is ready."
+                                        refresh++
+                                    } catch(e:Exception) { error=e.message ?: "SACCO activation failed." }
+                                    finally { busy=false }
+                                }
+                            },enabled=!busy && chairpersonName.trim().length>=2,modifier=Modifier.fillMaxWidth()) {
+                                if(busy) CircularProgressIndicator(Modifier.size(18.dp),color=Color.White,strokeWidth=2.dp) else Text("Activate SACCO and chairperson")
+                            }
+                            TextButton(onClick={activateSaccoId=null;chairpersonName="";chairpersonPhone="";chairpersonEmail="";chairpersonAddress=""},enabled=!busy,modifier=Modifier.fillMaxWidth()){Text("Cancel")}
+                        } else {
+                            Button(onClick={activateSaccoId=row.id;chairpersonName="";chairpersonPhone="";chairpersonEmail="";chairpersonAddress=""},modifier=Modifier.fillMaxWidth()) {
+                                Text("Activate SACCO + first chairperson")
+                            }
+                        }
+                    }
+                    val issued = issuedChairpersonAccount
+                    if (issued != null && issued.optString("sacco_id") == row.id) {
+                        Surface(color=PaleBlue,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp),verticalArrangement=Arrangement.spacedBy(5.dp)) {
+                                Text("Chairperson activation details — give these privately to the chairperson",color=Navy,fontWeight=FontWeight.Bold,fontSize=13.sp)
+                                Text("Account ID: ${issued.optString("account_id")}",color=Navy,fontWeight=FontWeight.SemiBold,fontSize=14.sp)
+                                Text("One-time PIN: ${issued.optString("temporary_pin")}",color=Navy,fontWeight=FontWeight.SemiBold,fontSize=14.sp)
+                                Text("The chairperson must create a personal PIN at first sign-in. You do not activate ordinary member accounts.",color=Muted,fontSize=11.sp,lineHeight=15.sp)
+                            }
+                        }
+                    }
                 }
             }
         }
