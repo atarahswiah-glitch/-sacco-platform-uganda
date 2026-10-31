@@ -74,7 +74,11 @@ private data class SaccoSession(
     val showLoans: Boolean = true,
     val showRepayments: Boolean = true,
     val memberName: String = "",
-    val memberId: String = ""
+    val memberId: String = "",
+    val ownerProfileComplete: Boolean = true,
+    val ownerDisplayName: String = "",
+    val ownerPhone: String = "",
+    val preferredLanguage: String = "en"
 )
 
 private data class Notice(val id: String, val title: String, val body: String, val category: String, val createdAt: String, val readAt: String?)
@@ -88,6 +92,8 @@ private enum class Destination(val label: String, val icon: ImageVector) {
 private fun SaccoApp() {
     var session by remember { mutableStateOf<SaccoSession?>(null) }
     var welcomeStep by remember { mutableStateOf(false) }
+    var loginStep by remember { mutableStateOf(false) }
+    var pendingAccountId by remember { mutableStateOf("") }
     var destination by remember { mutableStateOf(Destination.HOME) }
     var feature by remember { mutableStateOf<String?>(null) }
     var notices by remember { mutableStateOf<List<Notice>>(emptyList()) }
@@ -102,8 +108,12 @@ private fun SaccoApp() {
             if (active == null) {
                 if (!welcomeStep) {
                     WelcomeScreen(onGetStarted = { welcomeStep = true })
+                } else if (!loginStep) {
+                    PlatformOwnerIdScreen(busy, statusMessage, onBack = { welcomeStep = false; statusMessage = "" }, onContinue = { id -> pendingAccountId = id.trim().uppercase(); loginStep = true; statusMessage = "" })
                 } else {
                     LoginScreen(
+                        initialAccountId = pendingAccountId,
+                        onChangeAccountId = { loginStep = false; statusMessage = "" },
                         busy = busy,
                         message = statusMessage,
                         onLogin = { accountId, pin ->
@@ -140,6 +150,18 @@ private fun SaccoApp() {
                             }
                         }
                     )
+                }
+            } else if (active.role == "platform_owner" && !active.ownerProfileComplete) {
+                OwnerProfileScreen(active.ownerDisplayName, active.ownerPhone, active.preferredLanguage, busy, statusMessage) { name, phone, language ->
+                    scope.launch {
+                        busy = true; statusMessage = ""
+                        try {
+                            withContext(Dispatchers.IO) { saveOwnerProfile(active, name, phone, language) }
+                            session = active.copy(ownerProfileComplete = true, ownerDisplayName = name.trim(), ownerPhone = phone.trim(), preferredLanguage = language)
+                            statusMessage = "Platform Owner profile saved."
+                        } catch (e: Exception) { statusMessage = e.message ?: "Could not save your profile." }
+                        finally { busy = false }
+                    }
                 }
             } else {
                 Scaffold(
@@ -221,6 +243,21 @@ private suspend fun loginAndLoadContext(accountId: String, pin: String): SaccoSe
     val sacco = ctx.optJSONObject("sacco") ?: JSONObject()
     val member = ctx.optJSONObject("member") ?: JSONObject()
     val settings = ctx.optJSONObject("settings") ?: JSONObject()
+    var ownerProfileComplete = true
+    var ownerDisplayName = ""
+    var ownerPhone = ""
+    var preferredLanguage = "en"
+    if (ctx.optString("dashboard_role") == "platform_owner") {
+        val profileReq = Request.Builder().url("$SUPABASE_URL/rest/v1/user_profiles?select=display_name,phone,preferred_language&user_id=eq.$userId&limit=1").header("apikey", SUPABASE_PUBLISHABLE_KEY).header("Authorization", "Bearer $accessToken").get().build()
+        val profiles = JSONArray(requestJsonArray(profileReq))
+        if (profiles.length() > 0) {
+            val p = profiles.getJSONObject(0)
+            ownerDisplayName = p.optString("display_name")
+            ownerPhone = p.optString("phone")
+            preferredLanguage = p.optString("preferred_language", "en")
+        }
+        ownerProfileComplete = ownerDisplayName.isNotBlank() && ownerPhone.isNotBlank()
+    }
     return SaccoSession(
         accessToken = accessToken,
         refreshToken = refreshToken,
@@ -239,7 +276,11 @@ private suspend fun loginAndLoadContext(accountId: String, pin: String): SaccoSe
         showLoans = settings.optBoolean("show_loan_balances", true),
         showRepayments = settings.optBoolean("show_repayments_totals", true),
         memberName = member.optString("full_name"),
-        memberId = member.optString("member_id", member.optString("member_number"))
+        memberId = member.optString("member_id", member.optString("member_number")),
+        ownerProfileComplete = ownerProfileComplete,
+        ownerDisplayName = ownerDisplayName,
+        ownerPhone = ownerPhone,
+        preferredLanguage = preferredLanguage
     )
 }
 
@@ -258,6 +299,23 @@ private fun activateAccount(accountId: String, temporaryPin: String, newPin: Str
         .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
         .build()
     requestJson(request)
+}
+
+private fun requestJsonArray(request: Request): String {
+    http.newCall(request).execute().use { response ->
+        val body = response.body?.string().orEmpty()
+        if (!response.isSuccessful) throw IOException("Could not load your Platform Owner profile (" + response.code + ").")
+        return body.ifBlank { "[]" }
+    }
+}
+
+private suspend fun saveOwnerProfile(session: SaccoSession, name: String, phone: String, language: String) = withContext(Dispatchers.IO) {
+    if (session.role != "platform_owner") throw IOException("Only the Platform Owner can complete this profile.")
+    if (name.trim().length < 2) throw IOException("Enter your full name.")
+    if (phone.trim().length < 7) throw IOException("Enter a valid contact phone number.")
+    if (language !in listOf("en", "lg")) throw IOException("Choose a supported language.")
+    val payload = JSONObject().put("user_id", session.userId).put("display_name", name.trim()).put("phone", phone.trim()).put("preferred_language", language)
+    apiRequest(session, "/rest/v1/user_profiles?on_conflict=user_id", "POST", payload, "resolution=merge-duplicates,return=minimal")
 }
 
 private fun requestJson(request: Request): JSONObject {
@@ -389,9 +447,9 @@ private fun PlatformOwnerIdScreen(
     ) {
         TextButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, null); Spacer(Modifier.width(6.dp)); Text("Back") }
         Spacer(Modifier.height(18.dp))
-        Text("Platform Owner Registration", color = Navy, fontSize = 25.sp, fontWeight = FontWeight.Bold)
+        Text("Enter your Account ID", color = Navy, fontSize = 25.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
-        Text("Platform Owner access uses the account ID and PIN issued through the authorised account setup process. IDs are assigned by the platform, not generated manually in Termux.", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
+        Text("Your account ID is permanent and generated by the platform. Enter it here so the system can identify your assigned role before PIN sign-in.", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
         Spacer(Modifier.height(24.dp))
         OutlinedTextField(
             value = ownerId,
@@ -421,12 +479,14 @@ private fun PlatformOwnerIdScreen(
 
 @Composable
 private fun LoginScreen(
+    initialAccountId: String,
+    onChangeAccountId: () -> Unit,
     busy: Boolean,
     message: String,
     onLogin: (String, String) -> Unit,
     onActivate: (String, String, String) -> Unit
 ) {
-    var accountId by remember { mutableStateOf("") }
+    var accountId by remember(initialAccountId) { mutableStateOf(initialAccountId) }
     var pin by remember { mutableStateOf("") }
     var temporaryPin by remember { mutableStateOf("") }
     var newPin by remember { mutableStateOf("") }
@@ -444,6 +504,7 @@ private fun LoginScreen(
         Text(if (activationMode) "Activate your new account" else "Secure access to your SACCO", color = Muted, fontSize = 15.sp)
         Spacer(Modifier.height(30.dp))
         OutlinedTextField(value = accountId, onValueChange = { accountId = it.uppercase().take(24) }, label = { Text("Account ID") }, leadingIcon = { Icon(Icons.Filled.Badge, null) }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
+        TextButton(onClick = onChangeAccountId, enabled = !busy, contentPadding = PaddingValues(0.dp)) { Text("Change Account ID") }
         Spacer(Modifier.height(14.dp))
         if (!activationMode) {
             OutlinedTextField(value = pin, onValueChange = { pin = it.filter(Char::isDigit).take(12) }, label = { Text("PIN (8–12 digits)") }, leadingIcon = { Icon(Icons.Filled.Lock, null) }, trailingIcon = { IconButton(onClick = { showPin = !showPin }) { Icon(if (showPin) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null) } }, visualTransformation = if (showPin) VisualTransformation.None else PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
@@ -484,6 +545,34 @@ private fun LoginScreen(
         Text("Forgot your PIN? Contact your SACCO administrator for the verified recovery process.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
     }
 }
+
+@Composable
+private fun OwnerProfileScreen(initialName: String, initialPhone: String, initialLanguage: String, busy: Boolean, message: String, onSave: (String, String, String) -> Unit) {
+    var name by remember { mutableStateOf(initialName) }
+    var phone by remember { mutableStateOf(initialPhone) }
+    var language by remember { mutableStateOf(initialLanguage) }
+    Column(Modifier.fillMaxSize().background(Canvas).padding(24.dp), verticalArrangement = Arrangement.Center) {
+        Text("Platform Owner registration", color = Navy, fontSize = 25.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        Text("Your permanent ID has been recognised. Complete your profile to finish setting up your owner account.", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
+        Spacer(Modifier.height(20.dp))
+        OutlinedTextField(name, { name = it.take(160) }, label = { Text("Full name") }, leadingIcon = { Icon(Icons.Filled.Person, null) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(phone, { phone = it.take(30) }, label = { Text("Contact phone number") }, leadingIcon = { Icon(Icons.Filled.Phone, null) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), singleLine = true, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(10.dp))
+        Text("Preferred language", color = Navy, fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FilterChip(selected = language == "en", onClick = { language = "en" }, label = { Text("English") }, enabled = !busy)
+            FilterChip(selected = language == "lg", onClick = { language = "lg" }, label = { Text("Luganda") }, enabled = !busy)
+        }
+        if (message.isNotBlank()) { Spacer(Modifier.height(10.dp)); Text(message, color = if (message.contains("saved", true)) Teal else MaterialTheme.colorScheme.error, fontSize = 13.sp) }
+        Spacer(Modifier.height(18.dp))
+        Button(onClick = { onSave(name, phone, language) }, enabled = !busy && name.trim().length >= 2 && phone.trim().length >= 7, modifier = Modifier.fillMaxWidth().height(54.dp)) {
+            if (busy) CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp) else Text("Save profile and continue")
+        }
+    }
+}
+
 @Composable
 private fun TopAppBarSacco(title: String, subtitle: String, onBack: (() -> Unit)?, onLogout: () -> Unit) {
     Surface(color = Color.White, shadowElevation = 1.dp) {
