@@ -18,3 +18,12 @@ Use Android Studio or run `gradle assembleDebug` with JDK 17, Gradle 8.9, Androi
 
 ## Important status
 This source package has not yet been compiled on a real Android SDK. Authentication end-to-end testing is still pending: the current Supabase PIN/password policy may reject numeric-only PINs, and no real member account has been provisioned. Do not distribute this as a production APK until authentication, role authorization, account recovery, offline synchronization, ledger workflows, and end-to-end tests are complete.
+
+
+## First-run Platform Owner registration
+
+- On first launch, the app asks for the system-issued Platform Owner Account ID and checks it against the active Supabase account registry before opening the next screen.
+- The reserved Platform Owner account completes first-time setup by choosing and confirming a private 8–12 digit PIN; no temporary PIN or SMS delivery is assumed.
+- After activation, the same Account ID follows the normal sign-in path on later launches.
+- Other SACCO accounts continue to require their own issued temporary PIN for first activation.
+- The Android app and these Edge Function sources target the single configured Supabase project for this branch.
