@@ -27,3 +27,10 @@ This source package has not yet been compiled on a real Android SDK. Authenticat
 - After activation, the same Account ID follows the normal sign-in path on later launches.
 - Other SACCO accounts continue to require their own issued temporary PIN for first activation.
 - The Android app and these Edge Function sources target the single configured Supabase project for this branch.
+
+
+## Platform Owner activation boundaries
+
+- The Platform Owner may activate a newly registered SACCO tenant together with its first chairperson account.
+- The chairperson receives a one-time Account ID and temporary PIN and must set a private PIN before using the chairperson dashboard.
+- The Platform Owner cannot provision or activate ordinary member accounts. After the tenant is active, the chairperson or an authorised SACCO administrator provisions all other SACCO accounts.
