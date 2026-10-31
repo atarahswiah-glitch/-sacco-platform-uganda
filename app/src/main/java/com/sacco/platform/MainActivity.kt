@@ -87,6 +87,7 @@ private enum class Destination(val label: String, val icon: ImageVector) {
 @Composable
 private fun SaccoApp() {
     var session by remember { mutableStateOf<SaccoSession?>(null) }
+    var welcomeStep by remember { mutableStateOf(false) }
     var destination by remember { mutableStateOf(Destination.HOME) }
     var feature by remember { mutableStateOf<String?>(null) }
     var notices by remember { mutableStateOf<List<Notice>>(emptyList()) }
@@ -99,20 +100,18 @@ private fun SaccoApp() {
         Surface(Modifier.fillMaxSize(), color = Canvas) {
             val active = session
             if (active == null) {
-                LoginScreen(busy = busy, message = statusMessage, onLogin = { accountId, pin ->
-                    scope.launch {
-                        busy = true
-                        statusMessage = ""
-                        try {
-                            session = withContext(Dispatchers.IO) { loginAndLoadContext(accountId, pin) }
-                            destination = Destination.HOME
-                            feature = null
-                            statusMessage = ""
-                        } catch (e: Exception) {
-                            statusMessage = e.message ?: "Sign-in failed. Check your account ID, PIN, and connection."
-                        } finally { busy = false }
-                    }
-                })
+                if (!welcomeStep) {
+                    WelcomeScreen(onGetStarted = { welcomeStep = true })
+                } else {
+                    PlatformOwnerIdScreen(
+                        busy = busy,
+                        message = statusMessage,
+                        onBack = { welcomeStep = false; statusMessage = "" },
+                        onContinue = { ownerId ->
+                            statusMessage = "Owner ID entered. Registration verification will be connected before this step can activate your account."
+                        }
+                    )
+                }
             } else {
                 Scaffold(
                     containerColor = Canvas,
@@ -272,6 +271,73 @@ private suspend fun savePersonalVisibility(session: SaccoSession, hidden: Boolea
     val saccoId = session.saccoId ?: throw IOException("This account has no SACCO settings context.")
     val payload = JSONObject().put("sacco_id", saccoId).put("user_id", session.userId).put("hide_money_amounts", hidden)
     apiRequest(session, "/rest/v1/sacco_member_display_preferences?on_conflict=sacco_id,user_id", "POST", payload, "resolution=merge-duplicates,return=minimal")
+}
+
+@Composable
+private fun WelcomeScreen(onGetStarted: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().background(Canvas).padding(horizontal = 26.dp, vertical = 30.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(Modifier.size(94.dp).background(Blue, RoundedCornerShape(28.dp)), contentAlignment = Alignment.Center) {
+            Icon(Icons.Filled.AccountBalance, contentDescription = null, tint = Color.White, modifier = Modifier.size(48.dp))
+        }
+        Spacer(Modifier.height(30.dp))
+        Text("Welcome to", color = Muted, fontSize = 17.sp)
+        Text("SACCO Platform", color = Navy, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+        Text("Uganda", color = Blue, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(14.dp))
+        Text("One secure platform for your SACCOs.", color = Muted, fontSize = 15.sp)
+        Spacer(Modifier.height(38.dp))
+        Button(onClick = onGetStarted, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(16.dp)) {
+            Text("Get Started", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+        }
+    }
+}
+
+@Composable
+private fun PlatformOwnerIdScreen(
+    busy: Boolean,
+    message: String,
+    onBack: () -> Unit,
+    onContinue: (String) -> Unit
+) {
+    var ownerId by remember { mutableStateOf("") }
+    Column(
+        Modifier.fillMaxSize().background(Canvas).padding(horizontal = 24.dp, vertical = 22.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        TextButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, null); Spacer(Modifier.width(6.dp)); Text("Back") }
+        Spacer(Modifier.height(18.dp))
+        Text("Platform Owner Registration", color = Navy, fontSize = 25.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        Text("Enter the Platform Owner ID generated for this app. You can generate and retrieve the ID from the Termux terminal.", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
+        Spacer(Modifier.height(24.dp))
+        OutlinedTextField(
+            value = ownerId,
+            onValueChange = { ownerId = it.uppercase().filter { ch -> ch.isLetterOrDigit() || ch == '-' }.take(32) },
+            label = { Text("Platform Owner ID") },
+            leadingIcon = { Icon(Icons.Filled.Badge, null) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp)
+        )
+        if (message.isNotBlank()) {
+            Spacer(Modifier.height(12.dp))
+            Text(message, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+        }
+        Spacer(Modifier.height(22.dp))
+        Button(
+            onClick = { onContinue(ownerId) },
+            enabled = !busy && ownerId.isNotBlank(),
+            modifier = Modifier.fillMaxWidth().height(54.dp),
+            shape = RoundedCornerShape(15.dp)
+        ) {
+            if (busy) CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+            else Text("Continue", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        }
+    }
 }
 
 @Composable
