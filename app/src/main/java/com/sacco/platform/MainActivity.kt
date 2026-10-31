@@ -493,7 +493,7 @@ private fun PlatformOwnerIdScreen(
     onBack: () -> Unit,
     onContinue: (String) -> Unit
 ) {
-    var ownerId by remember { mutableStateOf("") }
+    var ownerId by remember { mutableStateOf("SIMSWIAH1") }
     Column(
         Modifier.fillMaxSize().background(Canvas).padding(horizontal = 24.dp, vertical = 22.dp),
         verticalArrangement = Arrangement.Center
