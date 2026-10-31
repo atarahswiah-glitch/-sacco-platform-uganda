@@ -770,7 +770,7 @@ private fun MemberManagementScreen(session:SaccoSession,onBack:()->Unit) {
       Text(m.fullName,color=Navy,fontWeight=FontWeight.SemiBold)
       Text(m.memberId.ifBlank{m.memberNumber}+(if(m.phone.isNotBlank()) " • "+m.phone else ""),color=Muted,fontSize=11.sp)
       if(m.hasLogin) Text("Login account already created",color=Teal,fontSize=12.sp)
-      else if(canManage) Button(onClick={busyId=m.id;error="";scope.launch{try{account=provisionMemberAccount(session,m,role);members=members.map{if(it.id==m.id)it.copy(hasLogin=true)else it}}catch(e:Exception){error=e.message ?: "Could not create account."}finally{busyId=""}},enabled=busyId.isBlank()&&account==null,modifier=Modifier.fillMaxWidth()){
+      else if(canManage) Button(onClick={busyId=m.id;error="";scope.launch{try{account=provisionMemberAccount(session,m,role);members=members.map{if(it.id==m.id)it.copy(hasLogin=true)else it}}catch(e:Exception){error=e.message ?: "Could not create account."}finally{busyId=""}}},enabled=busyId.isBlank()&&account==null,modifier=Modifier.fillMaxWidth()){
        if(busyId==m.id) CircularProgressIndicator(Modifier.size(18.dp),color=Color.White,strokeWidth=2.dp) else Text("Create login account")
       }
      }
