@@ -103,12 +103,22 @@ private fun SaccoApp() {
                 if (!welcomeStep) {
                     WelcomeScreen(onGetStarted = { welcomeStep = true })
                 } else {
-                    PlatformOwnerIdScreen(
+                    LoginScreen(
                         busy = busy,
                         message = statusMessage,
-                        onBack = { welcomeStep = false; statusMessage = "" },
-                        onContinue = { ownerId ->
-                            statusMessage = "Owner ID entered. Registration verification will be connected before this step can activate your account."
+                        onLogin = { accountId, pin ->
+                            busy = true
+                            statusMessage = ""
+                            scope.launch {
+                                try {
+                                    session = withContext(Dispatchers.IO) { loginAndLoadContext(accountId, pin) }
+                                    statusMessage = ""
+                                } catch (e: Exception) {
+                                    statusMessage = e.message ?: "Sign-in failed. Check your Account ID and PIN."
+                                } finally {
+                                    busy = false
+                                }
+                            }
                         }
                     )
                 }
