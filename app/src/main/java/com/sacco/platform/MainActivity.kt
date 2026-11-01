@@ -158,6 +158,7 @@ private fun SaccoApp() {
                 ) { padding ->
                     Box(Modifier.fillMaxSize().padding(padding)) {
                         when {
+                            feature == "Members" -> MembersScreen(active)
                             feature != null -> FeatureScreen(feature!!, active, onBack = { feature = null })
                             destination == Destination.HOME -> DashboardScreen(active, onOpen = { feature = it })
                             destination == Destination.ACCOUNTS -> AccountsScreen(active)
@@ -599,6 +600,91 @@ private fun SettingsScreen(session: SaccoSession, onUpdate: (SaccoSession) -> Un
 
 private fun saveSetting(session: SaccoSession, key: String, value: Boolean, success: () -> Unit, onMessage: (String) -> Unit, scope: kotlinx.coroutines.CoroutineScope, setBusy: (Boolean) -> Unit) {
     scope.launch { setBusy(true); try { updateSettings(session, JSONObject().put(key, value)); success(); onMessage("Setting saved.") } catch (e: Exception) { onMessage(e.message ?: "Could not save setting.") } finally { setBusy(false) } }
+}
+
+
+@Composable
+private fun MembersScreen(session: SaccoSession) {
+    val scope = rememberCoroutineScope()
+    var fullName by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var working by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("") }
+    var accountId by remember { mutableStateOf("") }
+    var temporaryPin by remember { mutableStateOf("") }
+    var memberRows by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    val allowed = session.role == "chairperson" || session.role == "sacco_admin"
+    LaunchedEffect(session.saccoId) {
+        try {
+            val result = withContext(Dispatchers.IO) { apiRequest(session, "/rest/v1/sacco_members?select=id,member_id,member_number,full_name,phone,status&order=created_at.desc&limit=100") }
+            val arr = JSONArray(result)
+            memberRows = (0 until arr.length()).map { arr.getJSONObject(it) }
+        } catch (e: Exception) { message = e.message ?: "Could not load members." }
+    }
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { SectionHeading("Members", "Register a member and create their login account.") }
+        if (allowed) item {
+            SettingsCard("New member") {
+                OutlinedTextField(fullName, { fullName = it }, label = { Text("Full name") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(phone, { phone = it }, label = { Text("Phone number") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(email, { email = it }, label = { Text("Email (optional)") }, modifier = Modifier.fillMaxWidth())
+                Button(enabled = !working && fullName.trim().length >= 2, modifier = Modifier.fillMaxWidth(), onClick = {
+                    working = true
+                    message = ""
+                    scope.launch {
+                        try {
+                            val saccoId = session.saccoId ?: throw IOException("No SACCO is linked to this login.")
+                            val reg = withContext(Dispatchers.IO) {
+                                val req = Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-register-member")
+                                    .header("apikey", SUPABASE_PUBLISHABLE_KEY).header("Authorization", "Bearer " + session.accessToken)
+                                    .header("Content-Type", "application/json")
+                                    .post(JSONObject().put("sacco_id", saccoId).put("full_name", fullName.trim()).put("phone", phone.trim()).put("email", email.trim()).put("custom_fields", JSONObject()).toString().toRequestBody("application/json".toMediaType())).build()
+                                requestJson(req)
+                            }
+                            val member = reg.optJSONObject("member") ?: throw IOException("Member record was not returned.")
+                            val provision = withContext(Dispatchers.IO) {
+                                val req = Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-provision-member-account")
+                                    .header("apikey", SUPABASE_PUBLISHABLE_KEY).header("Authorization", "Bearer " + session.accessToken)
+                                    .header("Content-Type", "application/json")
+                                    .post(JSONObject().put("sacco_id", saccoId).put("member_row_id", member.optString("id")).put("role", "member").toString().toRequestBody("application/json".toMediaType())).build()
+                                requestJson(req)
+                            }
+                            val account = provision.optJSONObject("account") ?: throw IOException("Member saved, but login account provisioning failed. Ask an administrator to complete account setup.")
+                            accountId = account.optString("account_id")
+                            temporaryPin = account.optString("temporary_pin")
+                            message = "Member and login account created. Give the temporary details privately."
+                            fullName = ""; phone = ""; email = ""
+                            val result = withContext(Dispatchers.IO) { apiRequest(session, "/rest/v1/sacco_members?select=id,member_id,member_number,full_name,phone,status&order=created_at.desc&limit=100") }
+                            val arr = JSONArray(result)
+                            memberRows = (0 until arr.length()).map { arr.getJSONObject(it) }
+                        } catch (e: Exception) { message = e.message ?: "Registration failed." }
+                        finally { working = false }
+                    }
+                }) {
+                    if (working) CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp) else Text("Register member and create login")
+                }
+            }
+        } else item { Text("Only the chairperson or SACCO administrator can register members.", color = Muted) }
+        if (accountId.isNotBlank()) item {
+            SettingsCard("One-time login details") {
+                Text("Account ID: " + accountId, color = Navy, fontWeight = FontWeight.Bold)
+                Text("Temporary PIN: " + temporaryPin, color = Navy, fontWeight = FontWeight.Bold)
+                Text("The member must choose Activate your account on the sign-in screen and set a private permanent PIN. Share these details privately.", color = Muted, fontSize = 12.sp)
+            }
+        }
+        if (message.isNotBlank()) item { Text(message, color = if (accountId.isNotBlank()) Teal else MaterialTheme.colorScheme.error, fontSize = 13.sp) }
+        item { Text("Registered members", color = Navy, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+        items(memberRows) { row ->
+            Surface(color = Color.White, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp)) {
+                    Text(row.optString("full_name"), color = Navy, fontWeight = FontWeight.SemiBold)
+                    Text("Member ID: " + row.optString("member_id"), color = Muted, fontSize = 12.sp)
+                    Text(row.optString("phone"), color = Muted, fontSize = 12.sp)
+                }
+            }
+        }
+    }
 }
 
 @Composable
