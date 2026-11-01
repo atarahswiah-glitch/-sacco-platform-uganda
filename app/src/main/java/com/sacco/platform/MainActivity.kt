@@ -1,6 +1,8 @@
 package com.sacco.platform
 
 import android.os.Bundle
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -19,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -27,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -95,10 +99,48 @@ private fun SaccoApp() {
     var busy by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var updateVersion by remember { mutableStateOf<String?>(null) }
+    var updateUrl by remember { mutableStateOf<String?>(null) }
+    var updateNotes by remember { mutableStateOf("") }
+    var updateDismissed by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            try {
+                val installedVersion = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.0.0"
+                val release = withContext(Dispatchers.IO) { checkLatestAppRelease(installedVersion) }
+                if (release != null && !updateDismissed) {
+                    updateVersion = release.first
+                    updateUrl = release.second
+                    updateNotes = release.third
+                }
+            } catch (_: Exception) { }
+            delay(6 * 60 * 60 * 1000L)
+        }
+    }
 
     MaterialTheme(colorScheme = lightColorScheme(primary = Blue, onPrimary = Color.White, background = Canvas, surface = Color.White, secondary = Teal)) {
         Surface(Modifier.fillMaxSize(), color = Canvas) {
             val active = session
+            if (updateVersion != null && updateUrl != null) {
+                AlertDialog(
+                    onDismissRequest = { updateDismissed = true; updateVersion = null },
+                    title = { Text("Update available") },
+                    text = { Text("SACCO Platform Uganda version $updateVersion is available.\n\n$updateNotes\n\nYou can keep using this version if you prefer.") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateUrl))
+                            context.startActivity(intent)
+                            updateDismissed = true
+                            updateVersion = null
+                        }) { Text("Download update") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { updateDismissed = true; updateVersion = null }) { Text("Not now") }
+                    }
+                )
+            }
             if (active == null) {
                 if (!welcomeStep) {
                     WelcomeScreen(onGetStarted = { welcomeStep = true })
@@ -212,6 +254,42 @@ private suspend fun loginAndLoadContext(accountId: String, pin: String): SaccoSe
         memberName = member.optString("full_name"),
         memberId = member.optString("member_id", member.optString("member_number"))
     )
+}
+
+private fun checkLatestAppRelease(installedVersion: String): Triple<String, String, String>? {
+    val request = Request.Builder()
+        .url("https://api.github.com/repos/atarahswiah-glitch/-sacco-platform-uganda/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .get().build()
+    http.newCall(request).execute().use { response ->
+        if (!response.isSuccessful) return null
+        val json = JSONObject(response.body?.string().orEmpty())
+        val tag = json.optString("tag_name").removePrefix("v")
+        if (tag.isBlank() || compareVersions(tag, installedVersion) <= 0) return null
+        val assets = json.optJSONArray("assets") ?: JSONArray()
+        var apkUrl: String? = null
+        for (i in 0 until assets.length()) {
+            val asset = assets.optJSONObject(i) ?: continue
+            if (asset.optString("name") == "sacco-platform-uganda.apk") {
+                apkUrl = asset.optString("browser_download_url").takeIf { it.startsWith("https://") }
+                break
+            }
+        }
+        val url = apkUrl ?: return null
+        return Triple(tag, url, json.optString("body").take(500))
+    }
+}
+
+private fun compareVersions(first: String, second: String): Int {
+    val a = first.split(".").map { it.substringBefore("-").toIntOrNull() ?: 0 }
+    val b = second.split(".").map { it.substringBefore("-").toIntOrNull() ?: 0 }
+    for (i in 0 until maxOf(a.size, b.size)) {
+        val x = a.getOrElse(i) { 0 }
+        val y = b.getOrElse(i) { 0 }
+        if (x != y) return x.compareTo(y)
+    }
+    return 0
 }
 
 private fun requestJson(request: Request): JSONObject {
