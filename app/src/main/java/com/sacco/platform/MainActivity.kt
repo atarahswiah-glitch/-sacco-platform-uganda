@@ -271,7 +271,7 @@ private fun checkLatestAppRelease(installedVersion: String): Triple<String, Stri
         var apkUrl: String? = null
         for (i in 0 until assets.length()) {
             val asset = assets.optJSONObject(i) ?: continue
-            if (asset.optString("name") == "sacco-platform-uganda.apk") {
+            if (asset.optString("name") == "app-release.apk") {
                 apkUrl = asset.optString("browser_download_url").takeIf { it.startsWith("https://") }
                 break
             }
