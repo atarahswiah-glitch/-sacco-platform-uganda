@@ -15,6 +15,22 @@ android {
         versionCode = 2
         versionName = "1.0.0"
     }
+    signingConfigs {
+        if (System.getenv("ANDROID_KEYSTORE_PATH") != null) {
+            create("release") {
+                storeFile = file(System.getenv("ANDROID_KEYSTORE_PATH"))
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
+        }
+    }
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
