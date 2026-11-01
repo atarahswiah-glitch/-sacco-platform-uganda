@@ -478,7 +478,7 @@ private fun WelcomeScreen(onGetStarted: () -> Unit) {
         Text("SACCO Platform", color = Navy, fontSize = 30.sp, fontWeight = FontWeight.Bold)
         Text("Uganda", color = Blue, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(14.dp))
-        Text("One secure platform for your SACCOs.", color = Muted, fontSize = 15.sp)
+        Text("Register your own account once, then sign in securely on every future visit.", color = Muted, fontSize = 15.sp, lineHeight = 21.sp)
         Spacer(Modifier.height(38.dp))
         Button(onClick = onGetStarted, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(16.dp)) {
             Text("Get Started", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
@@ -502,7 +502,7 @@ private fun PlatformOwnerIdScreen(
         Spacer(Modifier.height(18.dp))
         Text("Enter your Account ID", color = Navy, fontSize = 25.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
-        Text("Enter your personal account ID to continue. Your role and workspace will open automatically after secure sign-in.", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
+        Text("Enter your account ID. First-time users will complete registration and create a PIN. Returning users will sign in with their existing PIN.", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
         Spacer(Modifier.height(24.dp))
         OutlinedTextField(
             value = ownerId,
@@ -558,7 +558,7 @@ private fun LoginScreen(
         Spacer(Modifier.height(10.dp))
         Text(
             when {
-                activationMode && ownerBootstrap -> "First-time Platform Owner registration"
+                activationMode && ownerBootstrap -> "Complete your first-time registration"
                 activationMode -> "Activate your new SACCO account"
                 else -> "Secure sign-in"
             },
@@ -593,7 +593,7 @@ private fun LoginScreen(
                 )
                 Spacer(Modifier.height(12.dp))
             } else {
-                Text("Your Platform Owner account is reserved for you. Create your own private PIN to finish registration.", color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
+                Text("Your account is already reserved for you. Create and confirm your own private PIN. No one else needs to register or activate your account.", color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
                 Spacer(Modifier.height(12.dp))
             }
             OutlinedTextField(
