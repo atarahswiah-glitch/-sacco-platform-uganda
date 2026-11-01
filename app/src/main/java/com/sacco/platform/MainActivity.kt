@@ -665,7 +665,7 @@ private fun MembersScreen(session: SaccoSession) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { SectionHeading("Members", "Register a member and create their login account.") }
         if (allowed) item {
-            SettingsCard("New member") {
+            SettingsCard("New member", "Register a member in this SACCO and provision a separate account ID with a temporary PIN.") {
                 OutlinedTextField(fullName, { fullName = it }, label = { Text("Full name") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(phone, { phone = it }, label = { Text("Phone number") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(email, { email = it }, label = { Text("Email (optional)") }, modifier = Modifier.fillMaxWidth())
@@ -707,7 +707,7 @@ private fun MembersScreen(session: SaccoSession) {
             }
         } else item { Text("Only the chairperson or SACCO administrator can register members.", color = Muted) }
         if (accountId.isNotBlank()) item {
-            SettingsCard("One-time login details") {
+            SettingsCard("One-time login details", "These credentials are shown once for secure handover. The member must activate the account and set a private permanent PIN.") {
                 Text("Account ID: " + accountId, color = Navy, fontWeight = FontWeight.Bold)
                 Text("Temporary PIN: " + temporaryPin, color = Navy, fontWeight = FontWeight.Bold)
                 Text("The member must choose Activate your account on the sign-in screen and set a private permanent PIN. Share these details privately.", color = Muted, fontSize = 12.sp)
