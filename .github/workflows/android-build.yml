@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'app/**'
+      - 'supabase/**'
       - '*.gradle.kts'
       - 'settings.gradle.kts'
       - '.github/workflows/android-build.yml'
@@ -14,6 +15,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Type-check Supabase Edge Functions
+        run: |
+          for file in supabase/functions/*/index.ts; do
+            echo "Checking $file"
+            deno check --no-lock "$file"
+          done
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

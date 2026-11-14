@@ -44,8 +44,12 @@ Deno.serve(async (req: Request) => {
 
   const id = accountId(body.account_id);
   const temporaryPin = typeof body.temporary_pin === "string" ? body.temporary_pin : "";
+  const emailOtp = typeof body.email_otp === "string" ? body.email_otp.trim() : "";
   const newPin = body.new_pin;
-  if (!validAccountId(id) || !validPin(newPin) || (temporaryPin && (!validPin(temporaryPin) || temporaryPin === newPin))) {
+  if (!validAccountId(id) || !validPin(newPin) ||
+      (temporaryPin && (!validPin(temporaryPin) || temporaryPin === newPin)) ||
+      (emailOtp && !/^[0-9]{6}$/.test(emailOtp)) ||
+      (temporaryPin && emailOtp)) {
     return json(400, { error: "invalid_activation_details" });
   }
 
@@ -73,18 +77,32 @@ Deno.serve(async (req: Request) => {
   if (ownerError) return json(503, { error: "activation_unavailable" });
   const isActivePlatformOwner = owner?.active === true;
 
-  if (!temporaryPin && !isActivePlatformOwner) {
-    return json(400, { error: "temporary_pin_required_for_sacco_account" });
-  }
+  const { data: userResult, error: userError } = await admin.auth.admin.getUserById(userId);
+  const email = userResult?.user?.email;
+  if (userError || !email) return json(401, { error: "invalid_activation_details" });
 
-  if (temporaryPin) {
-    const { data: userResult, error: userError } = await admin.auth.admin.getUserById(userId);
-    const email = userResult?.user?.email;
-    if (userError || !email) return json(401, { error: "invalid_activation_details" });
-    const { data: verified, error: verifyError } = await authClient.auth.signInWithPassword({
-      email, password: temporaryPin,
+  if (isActivePlatformOwner) {
+    if (!emailOtp || temporaryPin || !userResult.user?.email_confirmed_at) {
+      return json(400, { error: "verified_email_code_required" });
+    }
+    const { data: verified, error: verifyError } = await authClient.auth.verifyOtp({
+      email,
+      token: emailOtp,
+      type: "email",
     });
-    if (verifyError || !verified.user) {
+    if (verifyError || !verified.user || verified.user.id !== userId) {
+      await admin.rpc("record_account_login_failure", { p_account_id: id });
+      return json(401, { error: "invalid_activation_details" });
+    }
+  } else {
+    if (!validPin(temporaryPin) || temporaryPin === newPin || emailOtp) {
+      return json(400, { error: "temporary_pin_required_for_sacco_account" });
+    }
+    const { data: verified, error: verifyError } = await authClient.auth.signInWithPassword({
+      email,
+      password: temporaryPin,
+    });
+    if (verifyError || !verified.user || verified.user.id !== userId) {
       await admin.rpc("record_account_login_failure", { p_account_id: id });
       return json(401, { error: "invalid_activation_details" });
     }

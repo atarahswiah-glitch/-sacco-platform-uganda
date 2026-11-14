@@ -96,6 +96,7 @@ private fun SaccoApp() {
     var pendingAccountId by remember { mutableStateOf("") }
     var ownerBootstrap by remember { mutableStateOf(false) }
     var activationRequired by remember { mutableStateOf(false) }
+    var ownerOtpSent by remember { mutableStateOf(false) }
     var destination by remember { mutableStateOf(Destination.HOME) }
     var feature by remember { mutableStateOf<String?>(null) }
     var notices by remember { mutableStateOf<List<Notice>>(emptyList()) }
@@ -120,6 +121,7 @@ private fun SaccoApp() {
                                 pendingAccountId = id.trim().uppercase()
                                 ownerBootstrap = check.isPlatformOwner
                                 activationRequired = check.requiresActivation
+                                ownerOtpSent = false
                                 loginStep = true
                             } catch (e: Exception) {
                                 statusMessage = e.message ?: "Account verification failed. Please try again."
@@ -131,7 +133,21 @@ private fun SaccoApp() {
                         initialAccountId = pendingAccountId,
                         initialActivationMode = activationRequired,
                         ownerBootstrap = ownerBootstrap,
-                        onChangeAccountId = { loginStep = false; statusMessage = "" },
+                        ownerOtpSent = ownerOtpSent,
+                        onRequestOwnerOtp = {
+                            scope.launch {
+                                busy = true
+                                statusMessage = ""
+                                try {
+                                    withContext(Dispatchers.IO) { requestOwnerActivationOtp(pendingAccountId) }
+                                    ownerOtpSent = true
+                                    statusMessage = "If this account is eligible, a verification code has been sent to its registered email."
+                                } catch (e: Exception) {
+                                    statusMessage = e.message ?: "Could not request the verification code."
+                                } finally { busy = false }
+                            }
+                        },
+                        onChangeAccountId = { loginStep = false; ownerOtpSent = false; statusMessage = "" },
                         busy = busy,
                         message = statusMessage,
                         onLogin = { accountId, pin ->
@@ -151,18 +167,19 @@ private fun SaccoApp() {
                                 }
                             }
                         },
-                        onActivate = { accountId, temporaryPin, newPin ->
+                        onActivate = { accountId, temporaryPin, newPin, emailOtp ->
                             scope.launch {
                                 busy = true
                                 statusMessage = ""
                                 try {
                                     withContext(Dispatchers.IO) {
-                                        activateAccount(accountId, temporaryPin, newPin)
+                                        activateAccount(accountId, temporaryPin, newPin, emailOtp)
                                     }
                                     session = withContext(Dispatchers.IO) { loginAndLoadContext(accountId, newPin) }
                                     destination = Destination.HOME
                                     feature = null
                                     statusMessage = ""
+                                    ownerOtpSent = false
                                 } catch (e: Exception) {
                                     statusMessage = e.message ?: "Account activation failed. Please try again."
                                 } finally {
@@ -201,6 +218,7 @@ private fun SaccoApp() {
                                 pendingAccountId = ""
                                 ownerBootstrap = false
                                 activationRequired = false
+                                ownerOtpSent = false
                             }
                         )
                     },
@@ -314,7 +332,7 @@ private suspend fun loginAndLoadContext(accountId: String, pin: String): SaccoSe
     )
 }
 
-private fun activateAccount(accountId: String, temporaryPin: String, newPin: String) {
+private fun activateAccount(accountId: String, temporaryPin: String, newPin: String, emailOtp: String) {
     if (accountId.isBlank()) throw IOException("Enter your account ID.")
     if (!newPin.matches(Regex("^[0-9]{8,12}$"))) throw IOException("Your PIN must contain 8–12 digits.")
     if (temporaryPin.isNotBlank() && (!temporaryPin.matches(Regex("^[0-9]{8,12}$")) || temporaryPin == newPin)) {
@@ -322,6 +340,7 @@ private fun activateAccount(accountId: String, temporaryPin: String, newPin: Str
     }
     val payload = JSONObject().put("account_id", accountId.trim()).put("new_pin", newPin)
     if (temporaryPin.isNotBlank()) payload.put("temporary_pin", temporaryPin)
+    if (emailOtp.isNotBlank()) payload.put("email_otp", emailOtp)
     val request = Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-activate-account")
         .header("apikey", SUPABASE_PUBLISHABLE_KEY)
         .header("Content-Type", "application/json")
@@ -343,6 +362,16 @@ private fun checkAccountId(accountId: String): AccountIdCheck {
         .build()
     val result = requestJson(request)
     return AccountIdCheck(result.optBoolean("requires_activation"), result.optString("account_type") == "platform_owner")
+}
+
+private fun requestOwnerActivationOtp(accountId: String) {
+    val payload = JSONObject().put("account_id", accountId.trim())
+    val request = Request.Builder().url("$SUPABASE_URL/functions/v1/sacco-request-owner-activation-otp")
+        .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+        .header("Content-Type", "application/json")
+        .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+        .build()
+    requestJson(request)
 }
 
 private fun requestJsonArray(request: Request): String {
@@ -535,15 +564,18 @@ private fun LoginScreen(
     initialAccountId: String,
     initialActivationMode: Boolean,
     ownerBootstrap: Boolean,
+    ownerOtpSent: Boolean,
+    onRequestOwnerOtp: () -> Unit,
     onChangeAccountId: () -> Unit,
     busy: Boolean,
     message: String,
     onLogin: (String, String) -> Unit,
-    onActivate: (String, String, String) -> Unit
+    onActivate: (String, String, String, String) -> Unit
 ) {
     var accountId by remember(initialAccountId) { mutableStateOf(initialAccountId) }
     var pin by remember { mutableStateOf("") }
     var temporaryPin by remember { mutableStateOf("") }
+    var emailOtp by remember { mutableStateOf("") }
     var newPin by remember { mutableStateOf("") }
     var confirmPin by remember { mutableStateOf("") }
     var activationMode by remember(initialActivationMode) { mutableStateOf(initialActivationMode) }
@@ -593,8 +625,21 @@ private fun LoginScreen(
                 )
                 Spacer(Modifier.height(12.dp))
             } else {
-                Text("Your Platform Owner account is reserved for you. Create your own private PIN to finish registration.", color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
-                Spacer(Modifier.height(12.dp))
+                Text("Your Platform Owner account is reserved for you. Verify the registered email before creating your private PIN.", color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
+                Spacer(Modifier.height(10.dp))
+                if (!ownerOtpSent) {
+                    OutlinedButton(onClick = onRequestOwnerOtp, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                        Text("Send verification code to registered email")
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = emailOtp, onValueChange = { emailOtp = it.filter(Char::isDigit).take(6) },
+                        label = { Text("Six-digit email verification code") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
             }
             OutlinedTextField(
                 value = newPin, onValueChange = { newPin = it.filter(Char::isDigit).take(12) },
@@ -619,11 +664,11 @@ private fun LoginScreen(
         Spacer(Modifier.height(22.dp))
         Button(
             onClick = {
-                if (activationMode) onActivate(accountId, temporaryPin, newPin)
+                if (activationMode) onActivate(accountId, temporaryPin, newPin, emailOtp)
                 else onLogin(accountId, pin)
             },
             enabled = !busy && accountId.isNotBlank() && if (activationMode) {
-                newPin.length in 8..12 && newPin == confirmPin && (ownerBootstrap || (temporaryPin.length in 8..12 && newPin != temporaryPin))
+                newPin.length in 8..12 && newPin == confirmPin && if (ownerBootstrap) (ownerOtpSent && emailOtp.length == 6) else (temporaryPin.length in 8..12 && newPin != temporaryPin)
             } else pin.length in 8..12,
             modifier = Modifier.fillMaxWidth().height(54.dp),
             shape = RoundedCornerShape(15.dp)
@@ -631,7 +676,7 @@ private fun LoginScreen(
             if (busy) CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
             else Text(
                 when {
-                    activationMode && ownerBootstrap -> "Complete registration"
+                    activationMode && ownerBootstrap -> "Verify and create PIN"
                     activationMode -> "Activate account"
                     else -> "Sign in securely"
                 }, fontWeight = FontWeight.SemiBold, fontSize = 16.sp
