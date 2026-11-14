@@ -570,7 +570,7 @@ private fun LoginScreen(
     busy: Boolean,
     message: String,
     onLogin: (String, String) -> Unit,
-    onActivate: (String, String, String) -> Unit
+    onActivate: (String, String, String, String) -> Unit
 ) {
     var accountId by remember(initialAccountId) { mutableStateOf(initialAccountId) }
     var pin by remember { mutableStateOf("") }
