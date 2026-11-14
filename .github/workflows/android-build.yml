@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'app/**'
+      - 'supabase/**'
       - '*.gradle.kts'
       - 'settings.gradle.kts'
       - '.github/workflows/android-build.yml'
